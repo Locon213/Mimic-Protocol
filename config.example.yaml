@@ -1,0 +1,22 @@
+# Mimic Client Configuration Example
+
+# Server connection details
+server: "mimic.example.com:443"
+uuid: "550e8400-e29b-41d4-a716-446655440000"
+
+# List of domains to mimic
+# Mimic will automatically select the appropriate behavior preset (social, video, messenger)
+domains:
+  - vk.com          # Social Network behavior
+  - rutube.ru       # Video Streaming behavior
+  - telegram.org    # Messenger behavior
+  - wikipedia.org   # General Web behavior
+
+# Behavior settings
+settings:
+  # How often to switch the "digital face" (min-max)
+  switch_time: "60s-300s"
+  
+  # Randomize the order of domains (true/false)
+  # If true, the sequence will be unique for each session
+  randomize: true
