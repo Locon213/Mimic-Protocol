@@ -27,10 +27,12 @@ Instead of just encrypting traffic (which is often flagged by DPI systems), Mimi
 
 | Component | Description |
 |-----------|-------------|
-| **Polymorphic Headers** | Each packet has a unique structure — random junk padding + encrypted header. DPI cannot write regex to intercept |
+| **QUIC Masking** | Packets are fully disguised as HTTP/3 (QUIC Short Header). Server protected by Active Probing Defender (drops fake DNS replies to DPI scanners) |
+| **Polymorphic Headers** | Smart padding dynamically expands packet size up to MTU to perfectly imitate video streaming. DPI cannot write a regex to intercept |
 | **ChaCha20-Poly1305** | Each packet is individually encrypted. Retransmissions get fresh nonces |
 | **ARQ Engine** | Reliable delivery: sliding window, Selective ACK, adaptive RTO (Jacobson/Karels) |
-| **AIMD Congestion Control** | Congestion management: slow start + congestion avoidance + fast retransmit |
+| **BBR Congestion Control** | Novel congestion management based on Bottleneck Bandwidth & Min RTT. Replaces legacy AIMD logic for maximum throughput |
+| **Forward Error Correction**| Reed-Solomon based FEC transparently recovers lost UDP packets on the fly, eliminating lag spikes on unstable 4G networks |
 | **Session Migration** | Seamless rotation: client migrates session to new UDP socket with zero data loss |
 | **Keepalive** | Automatic PING/PONG every 5 seconds, dead connection detection |
 
@@ -54,10 +56,9 @@ Client                                    Server
 ### MTP Polymorphic Packet
 
 ```
-[ Junk Padding: 1-32 bytes ][ Nonce: 24 bytes ][ Encrypted(Header + Payload) ]
-         ↑ random length              ↑ unique                ↑ ChaCha20-Poly1305
-         (derived from HMAC            for every
-          of shared key + seqNum)      packet
+[ QUIC Header: 9 bytes ][ Padding: up to 1350 bytes ][ Nonce: 24 bytes ][ Encrypted(Header+Payload) ]
+   ↑ Fake HTTP/3 prefix      ↑ Smart MTU Padding          ↑ unique                ↑ ChaCha20-Poly1305
+      for DPI evasion          (size masking)            for packet
 ```
 
 **No DPI can intercept this traffic** because:
@@ -110,6 +111,15 @@ settings:
   switch_time: "60s-300s"   # Change profile every 1-5 minutes
   randomize: true           # Randomize domain switch order
 ```
+
+## 📦 Go Dependencies
+The project relies on the following powerful open-source libraries:
+- **[hashicorp/yamux](https://github.com/hashicorp/yamux)** — Stream multiplexing over MTP.
+- **[klauspost/reedsolomon](https://github.com/klauspost/reedsolomon)** — Blazing fast FEC implementation for packet loss recovery.
+- **[refraction-networking/utls](https://github.com/refraction-networking/utls)** — TLS Fingerprint spoofing (browser mimicry).
+- **[golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto/chacha20poly1305)** — Secure ChaCha20-Poly1305 encryption.
+- **[google/uuid](https://github.com/google/uuid)** — UUID generation and parsing for authorization.
+- **[go-yaml/yaml](https://github.com/go-yaml/yaml)** — Configuration file parsing.
 
 ## 🚀 Usage
 

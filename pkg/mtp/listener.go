@@ -44,6 +44,10 @@ func Listen(address string, secret string) (*Listener, error) {
 		return nil, fmt.Errorf("mtp: listen udp: %w", err)
 	}
 
+	// Тюнинг буферов для высокой пропускной способности (игнорируем ошибки для кроссплатформенности)
+	_ = udpConn.SetReadBuffer(8 * 1024 * 1024)
+	_ = udpConn.SetWriteBuffer(8 * 1024 * 1024)
+
 	l := &Listener{
 		udpConn:     udpConn,
 		secret:      secret,
@@ -100,6 +104,21 @@ func (l *Listener) Addr() net.Addr {
 	return l.udpConn.LocalAddr()
 }
 
+// sendFakeResponse sends a decoy payload to confuse active probing scanners (DPI).
+// It mimics a DNS "Refused" response so the port appears to be a closed/restricted DNS service.
+func (l *Listener) sendFakeResponse(addr *net.UDPAddr) {
+	fakeDns := []byte{
+		0x00, 0x00, // Transaction ID (could be random, 0 is fine)
+		0x81, 0x05, // Flags: Standard query response, Refused
+		0x00, 0x01, // Questions: 1
+		0x00, 0x00, // Answer RRs
+		0x00, 0x00, // Authority RRs
+		0x00, 0x00, // Additional RRs
+		0x00, 0x00, 0x01, 0x00, 0x01, // Dummy question
+	}
+	l.udpConn.WriteToUDP(fakeDns, addr)
+}
+
 // readLoop reads all incoming UDP datagrams and dispatches them
 func (l *Listener) readLoop() {
 	buf := make([]byte, 65535)
@@ -137,10 +156,13 @@ func (l *Listener) readLoop() {
 		// New address: try to decode as SYN
 		pkt, err := l.codec.Decode(data)
 		if err != nil {
+			// Fallback: Active Probing Defender
+			l.sendFakeResponse(remoteAddr)
 			continue // Not a valid MTP packet, ignore
 		}
 
 		if pkt.Type != PacketSYN {
+			l.sendFakeResponse(remoteAddr)
 			continue // Not a SYN, ignore
 		}
 

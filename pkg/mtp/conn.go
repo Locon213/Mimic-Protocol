@@ -403,6 +403,9 @@ func Dial(address string, secret string) (*MTPConn, error) {
 		return nil, fmt.Errorf("mtp: dial udp: %w", err)
 	}
 
+	_ = udpConn.SetReadBuffer(4 * 1024 * 1024)
+	_ = udpConn.SetWriteBuffer(4 * 1024 * 1024)
+
 	conn := newMTPConn(udpConn, raddr, secret, false)
 
 	// Perform handshake FIRST (before starting recv goroutines)
@@ -428,6 +431,9 @@ func DialMigrate(address string, secret string, sessionID string) (*MTPConn, err
 	if err != nil {
 		return nil, fmt.Errorf("mtp: dial udp: %w", err)
 	}
+
+	_ = udpConn.SetReadBuffer(4 * 1024 * 1024)
+	_ = udpConn.SetWriteBuffer(4 * 1024 * 1024)
 
 	conn := newMTPConn(udpConn, raddr, secret, false)
 	conn.sessionID = sessionID

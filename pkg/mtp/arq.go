@@ -18,13 +18,13 @@ const (
 	DuplicateACKThreshold = 3
 )
 
-// inflight represents a packet that has been sent but not yet acknowledged
 type inflight struct {
 	pkt        *Packet
 	encoded    []byte
 	sentAt     time.Time
 	retries    int
 	retransmit *time.Timer
+	delivered  uint64 // Поле для расчетов BBR на момент отправки
 }
 
 // ARQEngine manages reliable delivery over unreliable UDP
@@ -48,6 +48,11 @@ type ARQEngine struct {
 	rto     time.Duration // Retransmission timeout
 	rttInit bool          // Whether we've measured the first RTT
 
+	// BBR (Bottleneck Bandwidth and Round-trip propagation time)
+	minRTT         time.Duration
+	btlBw          float64 // bytes per nanosecond
+	bytesDelivered uint64  // total bytes delivered
+
 	// Callbacks
 	sendFunc func([]byte) error // Send raw bytes over UDP
 	codec    *PacketCodec
@@ -57,6 +62,10 @@ type ARQEngine struct {
 	totalPacketsSent     uint64
 	totalPacketsRecv     uint64
 
+	// FEC
+	fecEnc *FecEncoder
+	fecDec *FecDecoder
+
 	// Lifecycle
 	closed  bool
 	closeCh chan struct{}
@@ -64,7 +73,7 @@ type ARQEngine struct {
 
 // NewARQEngine creates a new ARQ engine
 func NewARQEngine(codec *PacketCodec, sendFunc func([]byte) error, deliverBufSize int) *ARQEngine {
-	return &ARQEngine{
+	arq := &ARQEngine{
 		sendWindow: 2, // Start with slow start
 		ssthresh:   DefaultWindowSize,
 		unacked:    make(map[uint32]*inflight),
@@ -74,7 +83,35 @@ func NewARQEngine(codec *PacketCodec, sendFunc func([]byte) error, deliverBufSiz
 		sendFunc:   sendFunc,
 		codec:      codec,
 		closeCh:    make(chan struct{}),
+		minRTT:     10 * time.Second,
 	}
+
+	enc, _ := NewFecEncoder(func(startSeq uint32, parityIdx uint8, payload []byte) {
+		pkt := &Packet{
+			Type:    PacketFEC,
+			SeqNum:  startSeq,
+			Flags:   parityIdx, // Reuse Flags to store parity index (0 or 1)
+			Payload: payload,
+			AckNum:  arq.recvNext, // Piggyback
+		}
+		if encoded, err := codec.Encode(pkt); err == nil {
+			sendFunc(encoded)
+		}
+	})
+	arq.fecEnc = enc
+
+	dec, _ := NewFecDecoder(func(seq uint32, payload []byte) {
+		pkt := &Packet{
+			Type:    PacketDATA,
+			SeqNum:  seq,
+			Payload: append([]byte(nil), payload...), // Copy
+		}
+		// Dispatch back into ARQ
+		go arq.HandlePacket(pkt)
+	})
+	arq.fecDec = dec
+
+	return arq
 }
 
 // Send queues a DATA packet for reliable delivery.
@@ -119,14 +156,18 @@ func (a *ARQEngine) Send(payload []byte) error {
 	}
 
 	inf := &inflight{
-		pkt:     pkt,
-		encoded: encoded,
-		sentAt:  time.Now(),
+		pkt:       pkt,
+		encoded:   encoded,
+		sentAt:    time.Now(),
+		delivered: a.bytesDelivered,
 	}
 
 	a.unacked[seq] = inf
 	a.totalPacketsSent++
 	a.mu.Unlock()
+
+	// Add to Forward Error Correction encoder
+	a.fecEnc.AddDataPacket(seq, payload)
 
 	// Send the packet
 	if err := a.sendFunc(encoded); err != nil {
@@ -169,7 +210,10 @@ func (a *ARQEngine) HandlePacket(pkt *Packet) {
 	case PacketACK:
 		a.handleACK(pkt)
 	case PacketDATA:
+		a.fecDec.AddData(pkt.SeqNum, pkt.Payload)
 		a.handleDATA(pkt)
+	case PacketFEC:
+		a.fecDec.AddParity(pkt.SeqNum, pkt.Flags, append([]byte(nil), pkt.Payload...))
 	}
 }
 
@@ -180,14 +224,7 @@ func (a *ARQEngine) handleACK(pkt *Packet) {
 	// Handle cumulative ACK: acknowledge all packets up to ackNum
 	for seq, inf := range a.unacked {
 		if seq < ackNum {
-			// Update RTT measurement
-			if inf.retries == 0 { // Only use non-retransmitted for RTT
-				a.updateRTT(time.Since(inf.sentAt))
-			}
-			if inf.retransmit != nil {
-				inf.retransmit.Stop()
-			}
-			delete(a.unacked, seq)
+			a.processAckedPacket(seq, inf)
 		}
 	}
 
@@ -195,25 +232,68 @@ func (a *ARQEngine) handleACK(pkt *Packet) {
 	if pkt.Flags&FlagSACK != 0 {
 		for _, sackSeq := range pkt.SACKBlocks {
 			if inf, ok := a.unacked[sackSeq]; ok {
-				if inf.retries == 0 {
-					a.updateRTT(time.Since(inf.sentAt))
-				}
-				if inf.retransmit != nil {
-					inf.retransmit.Stop()
-				}
-				delete(a.unacked, sackSeq)
+				a.processAckedPacket(sackSeq, inf)
 			}
 		}
 	}
 
-	// Congestion control: increase window
-	if a.sendWindow < a.ssthresh {
-		// Slow start: exponential growth
-		a.sendWindow = min(a.sendWindow*2, MaxWindowSize)
+	// Congestion control: BBR-like target window
+	if a.minRTT > 0 && a.btlBw > 0 {
+		// BDP (Bytes) = Bottleneck Bandwidth * Min RTT
+		bdpBytes := a.btlBw * float64(a.minRTT.Nanoseconds())
+		targetWindow := int((bdpBytes / 1000.0) * 1.5) // Gain = 1.5, avg packet = 1000 bytes
+
+		if targetWindow < 4 {
+			targetWindow = 4
+		}
+		if targetWindow > MaxWindowSize {
+			targetWindow = MaxWindowSize
+		}
+
+		// Smooth adjustment
+		if a.sendWindow < targetWindow {
+			a.sendWindow++
+		} else if a.sendWindow > targetWindow {
+			a.sendWindow--
+		}
 	} else {
-		// Congestion avoidance: linear growth
-		a.sendWindow = min(a.sendWindow+1, MaxWindowSize)
+		// Fallback to slow start
+		if a.sendWindow < a.ssthresh {
+			a.sendWindow = min(a.sendWindow*2, MaxWindowSize)
+		} else {
+			a.sendWindow = min(a.sendWindow+1, MaxWindowSize)
+		}
 	}
+}
+
+func (a *ARQEngine) processAckedPacket(seq uint32, inf *inflight) {
+	a.bytesDelivered += uint64(len(inf.pkt.Payload))
+
+	if inf.retries == 0 {
+		deliveryTime := time.Since(inf.sentAt)
+		a.updateRTT(deliveryTime)
+
+		if a.minRTT == 0 || deliveryTime < a.minRTT {
+			a.minRTT = deliveryTime
+		}
+
+		if deliveryTime > 0 {
+			bytesDelivered := a.bytesDelivered - inf.delivered
+			rate := float64(bytesDelivered) / float64(deliveryTime.Nanoseconds())
+
+			// Max filter / EMA for bandwidth
+			if rate > a.btlBw {
+				a.btlBw = rate
+			} else {
+				a.btlBw = a.btlBw*0.9 + rate*0.1
+			}
+		}
+	}
+
+	if inf.retransmit != nil {
+		inf.retransmit.Stop()
+	}
+	delete(a.unacked, seq)
 }
 
 // handleDATA processes an incoming DATA packet
@@ -302,8 +382,9 @@ func (a *ARQEngine) retransmitPacket(seq uint32) {
 		return
 	}
 
-	// Congestion event: multiplicative decrease
-	a.ssthresh = max(a.sendWindow/2, 2)
+	// Congestion event: BBR limits window reduction
+	// Instead of halving the window, we reduce it by 20%
+	a.ssthresh = max(a.sendWindow*4/5, 4)
 	a.sendWindow = a.ssthresh
 
 	// Exponential backoff on RTO

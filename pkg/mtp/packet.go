@@ -1,6 +1,7 @@
 package mtp
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -20,6 +21,7 @@ const (
 	PacketFINACK uint8 = 0x06
 	PacketPING   uint8 = 0x07
 	PacketPONG   uint8 = 0x08
+	PacketFEC    uint8 = 0x09
 )
 
 // Packet flags
@@ -50,12 +52,19 @@ type Packet struct {
 // PacketCodec handles polymorphic encoding and decoding of MTP packets
 type PacketCodec struct {
 	sharedKey []byte // 32-byte key derived from UUID
+	dcid      []byte // 8-byte Connection ID for QUIC masking
 }
 
 // NewPacketCodec creates a new codec with the given shared secret
 func NewPacketCodec(secret string) *PacketCodec {
 	key := deriveKey(secret)
-	return &PacketCodec{sharedKey: key}
+
+	// Derive an 8-byte DCID from the key
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("QUIC_DCID_DERIVATION"))
+	dcid := mac.Sum(nil)[:8]
+
+	return &PacketCodec{sharedKey: key, dcid: dcid}
 }
 
 // deriveKey creates a 32-byte key from a string secret
@@ -64,19 +73,7 @@ func deriveKey(secret string) []byte {
 	return hash[:]
 }
 
-// paddingLength computes the deterministic junk padding length for a given seqNum.
-// Both client and server derive the same padding length from the shared key + seqNum.
-func (c *PacketCodec) paddingLength(seqNum uint32) int {
-	seqBytes := make([]byte, 4)
-	binary.BigEndian.PutUint32(seqBytes, seqNum)
-
-	mac := hmac.New(sha256.New, c.sharedKey)
-	mac.Write(seqBytes)
-	digest := mac.Sum(nil)
-
-	// Padding length: 1 to 32 bytes (never zero, always unpredictable)
-	return int(digest[0]%32) + 1
-}
+// Функция paddingLength удалена, генерация случайной длины будет встроена напрямую в Encode
 
 // Encode serializes and encrypts a Packet into wire format:
 // [ random junk padding ] [ nonce ] [ encrypted(header + payload) ]
@@ -114,16 +111,41 @@ func (c *PacketCodec) Encode(pkt *Packet) ([]byte, error) {
 
 	ciphertext := aead.Seal(nil, nonce, plaintext, nil)
 
-	// 4. Generate deterministic junk padding
-	padLen := c.paddingLength(pkt.SeqNum)
-	padding := make([]byte, padLen)
-	rand.Read(padding) // Fill with random bytes (content doesn't matter)
+	// 4. Generate smart junk padding
+	// Max safe UDP payload size is ~1350 bytes.
+	baseSize := 2 + len(nonce) + len(ciphertext)
+	maxPad := 1350 - baseSize
+	if maxPad < 10 {
+		maxPad = 10
+	}
 
-	// 5. Wire format: [padLen:1] [padding:padLen] [nonce:24] [ciphertext:N]
-	// The first byte tells receiver how much to skip (it's also encrypted pseudo-randomly
-	// but receiver can recompute it via paddingLength)
-	wire := make([]byte, 0, 1+padLen+len(nonce)+len(ciphertext))
-	wire = append(wire, byte(padLen))
+	randBytes := make([]byte, 2)
+	rand.Read(randBytes)
+	rng := binary.BigEndian.Uint16(randBytes)
+
+	// 50% chance to pad up to MTU, 50% chance for small padding
+	var padLen int
+	if rng%2 == 0 {
+		padLen = int(rng%uint16(maxPad)) + 1
+	} else {
+		padLen = int(rng%32) + 1
+	}
+
+	padding := make([]byte, padLen)
+	rand.Read(padding)
+
+	// 5. Wire format with QUIC masking:
+	// [QUIC Short Header: 9 bytes] [padLen:2] [padding:padLen] [nonce:24] [ciphertext:N]
+	quicHeader := make([]byte, 9)
+	quicHeader[0] = 0x40 // QUIC Short Header flag (0x40 = 0b01000000)
+	copy(quicHeader[1:], c.dcid)
+
+	wire := make([]byte, 0, 9+2+padLen+len(nonce)+len(ciphertext))
+	padHeader := make([]byte, 2)
+	binary.BigEndian.PutUint16(padHeader, uint16(padLen))
+
+	wire = append(wire, quicHeader...)
+	wire = append(wire, padHeader...)
 	wire = append(wire, padding...)
 	wire = append(wire, nonce...)
 	wire = append(wire, ciphertext...)
@@ -134,13 +156,23 @@ func (c *PacketCodec) Encode(pkt *Packet) ([]byte, error) {
 // Decode decrypts and deserializes wire bytes into a Packet.
 // It uses the seqNum-hint from the padding length derivation to strip junk.
 func (c *PacketCodec) Decode(wire []byte) (*Packet, error) {
-	if len(wire) < 2 {
+	if len(wire) < 9+3 {
 		return nil, fmt.Errorf("mtp: packet too short")
 	}
 
-	// 1. Read padding length byte
-	padLen := int(wire[0])
-	if padLen < 1 || padLen > 32 {
+	// 1. Verify QUIC Short Header
+	if wire[0] != 0x40 {
+		return nil, fmt.Errorf("mtp: invalid QUIC short header flag")
+	}
+	if !bytes.Equal(wire[1:9], c.dcid) {
+		return nil, fmt.Errorf("mtp: DCID mismatch (active probe?)")
+	}
+
+	offset := 9 // Skip QUIC header
+
+	// 2. Read padding length (2 bytes)
+	padLen := int(binary.BigEndian.Uint16(wire[offset : offset+2]))
+	if padLen < 1 || padLen > 1350 {
 		return nil, fmt.Errorf("mtp: invalid padding length %d", padLen)
 	}
 
@@ -150,15 +182,15 @@ func (c *PacketCodec) Decode(wire []byte) (*Packet, error) {
 	}
 
 	nonceSize := aead.NonceSize()
-	minLen := 1 + padLen + nonceSize + aead.Overhead() + headerSize
+	minLen := offset + 2 + padLen + nonceSize + aead.Overhead() + headerSize
 	if len(wire) < minLen {
 		return nil, fmt.Errorf("mtp: packet too short for declared padding")
 	}
 
-	// 2. Skip padding, extract nonce and ciphertext
-	offset := 1 + padLen
-	nonce := wire[offset : offset+nonceSize]
-	ciphertext := wire[offset+nonceSize:]
+	// 3. Skip padding, extract nonce and ciphertext
+	dataOffset := offset + 2 + padLen
+	nonce := wire[dataOffset : dataOffset+nonceSize]
+	ciphertext := wire[dataOffset+nonceSize:]
 
 	// 3. Decrypt
 	plaintext, err := aead.Open(nil, nonce, ciphertext, nil)

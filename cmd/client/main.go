@@ -233,18 +233,6 @@ func runStatsDisplay(state *AppState, socks5 *proxy.SOCKS5Server, stop <-chan st
 		case <-stop:
 			return
 		case <-ticker.C:
-			upTotal := stats.BytesUp.Load()
-			downTotal := stats.BytesDown.Load()
-
-			// Calculate speed (bytes/sec since last tick)
-			upSpeed := upTotal - prevUp
-			downSpeed := downTotal - prevDown
-			prevUp = upTotal
-			prevDown = downTotal
-
-			// Format uptime
-			uptime := time.Since(state.connectedAt)
-
 			// Get MTP-level stats
 			var mtpUpTotal, mtpDownTotal int64
 			mtpConn := state.tm.GetMTPConn()
@@ -253,7 +241,16 @@ func runStatsDisplay(state *AppState, socks5 *proxy.SOCKS5Server, stop <-chan st
 				mtpDownTotal = mtpConn.BytesRecv.Load()
 			}
 
+			// Calculate speed based on actual MTP traffic (includes mimicry pacing)
+			upSpeed := mtpUpTotal - prevUp
+			downSpeed := mtpDownTotal - prevDown
+			prevUp = mtpUpTotal
+			prevDown = mtpDownTotal
+
 			totalTraffic := mtpUpTotal + mtpDownTotal
+
+			// Format uptime
+			uptime := time.Since(state.connectedAt)
 
 			// Build status line
 			statusLine := fmt.Sprintf("\r  ↑ %s/s  ↓ %s/s  │  Traffic: %s  │  Connected: %s  │  Active: %d  ",

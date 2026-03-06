@@ -185,28 +185,7 @@ func TestWrongKeyDecryption(t *testing.T) {
 	}
 }
 
-func TestPaddingLength(t *testing.T) {
-	codec := NewPacketCodec("test-key-for-padding")
-
-	// Verify padding length is deterministic for same seqNum
-	pad1 := codec.paddingLength(42)
-	pad2 := codec.paddingLength(42)
-	if pad1 != pad2 {
-		t.Errorf("Padding length not deterministic: %d != %d", pad1, pad2)
-	}
-
-	// Verify padding length varies across seqNums
-	paddings := make(map[int]bool)
-	for i := uint32(0); i < 100; i++ {
-		paddings[codec.paddingLength(i)] = true
-	}
-
-	if len(paddings) < 3 {
-		t.Errorf("Padding length has low entropy: only %d distinct values in 100 seqNums", len(paddings))
-	}
-
-	t.Logf("Padding entropy: %d distinct values across 100 seqNums", len(paddings))
-}
+// TestPaddingLength was removed because logic is now fully dynamic and inlined within Encode
 
 func TestARQDeliveryOrdering(t *testing.T) {
 	codec := NewPacketCodec("arq-test-key")

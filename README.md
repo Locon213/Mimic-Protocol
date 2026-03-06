@@ -27,10 +27,12 @@
 
 | Компонент | Описание |
 |-----------|----------|
-| **Полиморфные заголовки** | Структура каждого пакета уникальна — случайный junk-паддинг + зашифрованный заголовок. DPI не может написать регулярку для перехвата |
+| **QUIC маскировка** | Пакеты на 100% маскируются под HTTP/3 (QUIC Short Header). Сервер защищен Active Probing Defender (отвечает фейковыми DNS пакетами сканерам) |
+| **Полиморфные заголовки** | Структура каждого пакета уникальна. Умный Padding динамически растягивает размер до MTU, имитируя видео-поток. DPI не может написать регулярку |
 | **ChaCha20-Poly1305** | Каждый пакет шифруется индивидуально. Перешифровка при ретрансмиссии (новый nonce) |
 | **ARQ Engine** | Гарантия доставки: скользящее окно, Selective ACK, адаптивный RTO (Jacobson/Karels) |
-| **AIMD Congestion Control** | Контроль перегрузок: slow start + congestion avoidance + fast retransmit |
+| **BBR Congestion Control** | Контроль перегрузок на базе замера пропускной способности (BtlBw) и пинга (Min RTT). Полностью заменяет устаревший алгоритм AIMD, давая макс. скорость |
+| **Forward Error Correction**| Модуль (Reed-Solomon), который восстанавливает потерянные UDP-пакеты прямо на лету без ожидания ретрансмиссии (идеально для плохих 4G сетей) |
 | **Session Migration** | Бесшовная ротация: клиент мигрирует сессию на новый UDP-сокет без потери данных |
 | **Keepalive** | Автоматический PING/PONG каждые 5 секунд, обнаружение мёртвых соединений |
 
@@ -54,11 +56,9 @@
 ### Полиморфный пакет MTP
 
 ```
-[ Junk Padding: 1-32 байт ][ Nonce: 24 байт ][ Encrypted(Header + Payload) ]
-         ↑ рандомная длина           ↑ уникален              ↑ ChaCha20-Poly1305
-         (определяется по            для каждого
-          HMAC от shared key          пакета
-          + seqNum)
+[ QUIC Header: 9 байт ][ Padding: до 1350 байт ][ Nonce: 24 байт ][ Encrypted(Header+Payload) ]
+   ↑ Фейковый префикс       ↑ Smart Padding         ↑ уникален               ↑ ChaCha20-Poly1305
+       для обхода DPI        (маскировка размера)     для пакета
 ```
 
 **Ни один DPI не может перехватить этот трафик**, потому что:
@@ -111,6 +111,15 @@ settings:
   switch_time: "60s-300s"   # Менять профиль каждые 1-5 минут
   randomize: true           # Случайный порядок смены доменов
 ```
+
+## 📦 Используемые библиотеки (Go)
+В проекте используются следующие мощные Open-Source решения:
+- **[hashicorp/yamux](https://github.com/hashicorp/yamux)** — мультиплексирование потоков поверх MTP.
+- **[klauspost/reedsolomon](https://github.com/klauspost/reedsolomon)** — сверхбыстрая реализация FEC для восстановления потерь.
+- **[refraction-networking/utls](https://github.com/refraction-networking/utls)** — подмена TLS Fingerprint (имитация реальных браузеров).
+- **[golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto/chacha20poly1305)** — надежное шифрование ChaCha20-Poly1305.
+- **[google/uuid](https://github.com/google/uuid)** — генерация и парсинг UUID для авторизации.
+- **[go-yaml/yaml](https://github.com/go-yaml/yaml)** — парсинг конфигурационных файлов.
 
 ## 🚀 Использование
 

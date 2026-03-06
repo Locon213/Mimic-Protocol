@@ -99,6 +99,20 @@ func (s *SOCKS5Server) Addr() net.Addr {
 	return s.listener.Addr()
 }
 
+// trackingWriter wraps an io.Writer and atomically increments a counter
+type trackingWriter struct {
+	w       io.Writer
+	counter *atomic.Int64
+}
+
+func (tw *trackingWriter) Write(p []byte) (n int, err error) {
+	n, err = tw.w.Write(p)
+	if n > 0 {
+		tw.counter.Add(int64(n))
+	}
+	return n, err
+}
+
 // handleConn processes a single SOCKS5 connection
 func (s *SOCKS5Server) handleConn(conn net.Conn) {
 	defer func() {
@@ -222,16 +236,14 @@ func (s *SOCKS5Server) handleConn(conn net.Conn) {
 	// Client -> Server
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(stream, conn)
-		s.stats.BytesUp.Add(n)
+		io.Copy(&trackingWriter{w: stream, counter: &s.stats.BytesUp}, conn)
 		stream.Close()
 	}()
 
 	// Server -> Client
 	go func() {
 		defer wg.Done()
-		n, _ := io.Copy(conn, stream)
-		s.stats.BytesDown.Add(n)
+		io.Copy(&trackingWriter{w: conn, counter: &s.stats.BytesDown}, stream)
 		conn.Close()
 	}()
 
