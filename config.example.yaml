@@ -1,12 +1,17 @@
 # Mimic Client Configuration Example
 
 # Server connection details
-# For local testing: localhost:8080
 server: "localhost:8080"
 uuid: "550e8400-e29b-41d4-a716-446655440000"
 
+# Transport protocol: "mtp" (UDP, default) or "tcp" (legacy)
+transport: "mtp"
+
+# Local SOCKS5 proxy port (default: 1080)
+local_port: 1080
+
 # List of domains to mimic
-# Mimic will automatically select the appropriate behavior preset (social, video, messenger)
+# Mimic will automatically select the appropriate behavior preset
 domains:
   - vk.com          # Social Network behavior
   - rutube.ru       # Video Streaming behavior
@@ -15,7 +20,7 @@ domains:
 
 # Behavior settings
 settings:
-  # How often to switch the "digital face" (min-max)
+  # How often to switch the "digital face" (supports: "60s-300s", "1m-5m", or "60-300")
   switch_time: "60s-300s"
   
   # Randomize the order of domains (true/false)

@@ -15,8 +15,12 @@ import (
 	"github.com/Locon213/Mimic-Protocol/pkg/config"
 	"github.com/Locon213/Mimic-Protocol/pkg/mimic"
 	"github.com/Locon213/Mimic-Protocol/pkg/presets"
+	"github.com/Locon213/Mimic-Protocol/pkg/proxy"
 	"github.com/Locon213/Mimic-Protocol/pkg/transport"
 )
+
+// Stream type marker (must match server)
+const StreamTypeMimic = 0x02
 
 type AppState struct {
 	cfg           *config.ClientConfig
@@ -25,13 +29,16 @@ type AppState struct {
 	gen           *mimic.Generator
 	tm            *transport.Manager
 	mutex         sync.RWMutex
+	connectedAt   time.Time
 }
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
 	flag.Parse()
 
-	fmt.Println("Mimic Client v0.0.1")
+	fmt.Println("╔══════════════════════════════════════════════╗")
+	fmt.Println("║           Mimic Client v0.2.0 (MTP)         ║")
+	fmt.Println("╚══════════════════════════════════════════════╝")
 
 	// 1. Load configuration
 	cfg, err := config.LoadClientConfig(*configPath)
@@ -46,6 +53,8 @@ func main() {
 				SwitchMin: 10 * time.Second,
 				SwitchMax: 30 * time.Second,
 			},
+			Transport: "mtp",
+			LocalPort: 1080,
 		}
 	}
 
@@ -57,34 +66,61 @@ func main() {
 	// Initial domain setup
 	state.switchDomain(cfg.Domains[0])
 
-	// 2. Start Session (Connect + Handshake + Yamux)
-	log.Printf("Connecting to %s...", cfg.Server)
+	// 2. Start Session (MTP + Yamux)
+	fmt.Printf("🔌 Connecting to %s via MTP (UDP)...\n", cfg.Server)
 	session, err := state.tm.StartSession(state.currentDomain)
 	if err != nil {
-		log.Fatalf("Failed to start session: %v", err)
+		log.Fatalf("❌ Failed to start session: %v", err)
 	}
-	log.Println("Session established!")
 
-	// 3. Start control loop (domain switching)
+	state.connectedAt = time.Now()
+	fmt.Println("✅ Session established!")
+	fmt.Println("────────────────────────────────────────────────")
+
+	// 3. Start SOCKS5 proxy
+	bindAddr := fmt.Sprintf("127.0.0.1:%d", cfg.LocalPort)
+	socks5, err := proxy.NewSOCKS5Server(bindAddr, session)
+	if err != nil {
+		log.Fatalf("❌ Failed to start SOCKS5 proxy: %v", err)
+	}
+
+	go socks5.Serve()
+
+	fmt.Printf("🌐 SOCKS5 Proxy: %s\n", socks5.Addr().String())
+	fmt.Printf("🔑 UUID: %s\n", cfg.UUID)
+	fmt.Printf("🛡️  Transport: MTP (Mimic Transport Protocol)\n")
+	fmt.Println("────────────────────────────────────────────────")
+	fmt.Println("Configure your browser/application to use:")
+	fmt.Printf("  Protocol: SOCKS5\n")
+	fmt.Printf("  Address:  127.0.0.1\n")
+	fmt.Printf("  Port:     %d\n", cfg.LocalPort)
+	fmt.Println("────────────────────────────────────────────────")
+
+	// 4. Start control loop (domain/preset switching only — no transport migration)
 	stopChan := make(chan struct{})
 	go runDomainSwitcher(state, stopChan)
 
-	// 4. Start traffic loop (using Yamux stream)
-	// We open a stream over the persistent session
+	// 5. Start stats display
+	go runStatsDisplay(state, socks5, stopChan)
+
+	// 6. Start mimic traffic loop (background noise)
 	stream, err := session.Open()
 	if err != nil {
-		log.Fatalf("Failed to open stream: %v", err)
+		log.Printf("⚠️ Could not open mimic stream: %v", err)
+	} else {
+		// Send stream type marker first so server knows this is mimic traffic
+		stream.Write([]byte{StreamTypeMimic})
+		go runTrafficLoop(state, stream, stopChan)
 	}
-
-	go runTrafficLoop(state, stream, stopChan)
 
 	// Graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
 	<-sigChan
-	fmt.Println("\nShutting down Mimic Client...")
+	fmt.Println("\n🛑 Shutting down Mimic Client...")
 	close(stopChan)
+	socks5.Close()
 	time.Sleep(500 * time.Millisecond)
 }
 
@@ -105,7 +141,7 @@ func (s *AppState) switchDomain(domain string) {
 		s.gen.SetPreset(&preset)
 	}
 
-	fmt.Printf("\n[Mimic] Switching profile >>> %s (Preset: %s)\n", domain, preset.Name)
+	fmt.Printf("\n🎭 [Mimic] Switching profile >>> %s (Preset: %s)\n", domain, preset.Name)
 }
 
 func (s *AppState) getParams() (string, *mimic.Generator) {
@@ -118,7 +154,14 @@ func runDomainSwitcher(state *AppState, stop <-chan struct{}) {
 	domainIndex := 0
 
 	getNextSwitchTime := func() time.Duration {
-		return state.cfg.Settings.SwitchMin // Simplified
+		cfg := state.cfg
+		minD := cfg.Settings.SwitchMin
+		maxD := cfg.Settings.SwitchMax
+		if minD >= maxD {
+			return minD
+		}
+		diff := maxD - minD
+		return minD + time.Duration(rand.Int63n(int64(diff)))
 	}
 
 	timer := time.NewTimer(getNextSwitchTime())
@@ -133,17 +176,11 @@ func runDomainSwitcher(state *AppState, stop <-chan struct{}) {
 			domainIndex = (domainIndex + 1) % len(domains)
 			newDomain := domains[domainIndex]
 
-			// 1. Update Logic
+			// Switch the mimic behavior profile (preset)
+			// NOTE: No transport migration — MTP's polymorphic packets
+			// already change appearance on every send, making physical
+			// connection rotation unnecessary for DPI evasion.
 			state.switchDomain(newDomain)
-
-			// 2. Rotate Transport (The magic happens here)
-			// This runs in background to not block main logic too much
-			go func(d string) {
-				err := state.tm.RotateTransport(d)
-				if err != nil {
-					log.Printf("Failed to rotate transport: %v", err)
-				}
-			}(newDomain)
 
 			timer.Reset(getNextSwitchTime())
 		}
@@ -169,19 +206,93 @@ func runTrafficLoop(state *AppState, stream net.Conn, stop <-chan struct{}) {
 			payload := make([]byte, size)
 			rand.Read(payload)
 
-			// Send data through Yamux stream. Yamux multiplexes the stream.
-			// Currently VirtualConn just delegates to `conn.Write(b)`, which writes raw bytes.
-			// But for Mimic to hide Yamux traffic, Yamux writes should be wrapped in TLS records.
-			// So `protocol.Connection.Write` needs to proxy to `WriteTLSRecord`, and `Read` to `ReadTLSRecord`.
 			_, err := stream.Write(payload)
 			if err != nil {
-				log.Printf("Write error: %v", err)
+				log.Printf("[Mimic] Write error: %v", err)
 				return
 			}
 
 			// Read response
-			stream.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+			stream.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 			stream.Read(buf)
 		}
 	}
+}
+
+// runStatsDisplay prints live connection statistics
+func runStatsDisplay(state *AppState, socks5 *proxy.SOCKS5Server, stop <-chan struct{}) {
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	stats := socks5.GetStats()
+
+	var prevUp, prevDown int64
+
+	for {
+		select {
+		case <-stop:
+			return
+		case <-ticker.C:
+			upTotal := stats.BytesUp.Load()
+			downTotal := stats.BytesDown.Load()
+
+			// Calculate speed (bytes/sec since last tick)
+			upSpeed := upTotal - prevUp
+			downSpeed := downTotal - prevDown
+			prevUp = upTotal
+			prevDown = downTotal
+
+			// Format uptime
+			uptime := time.Since(state.connectedAt)
+
+			// Get MTP-level stats
+			var mtpUpTotal, mtpDownTotal int64
+			mtpConn := state.tm.GetMTPConn()
+			if mtpConn != nil {
+				mtpUpTotal = mtpConn.BytesSent.Load()
+				mtpDownTotal = mtpConn.BytesRecv.Load()
+			}
+
+			totalTraffic := mtpUpTotal + mtpDownTotal
+
+			// Build status line
+			statusLine := fmt.Sprintf("\r  ↑ %s/s  ↓ %s/s  │  Traffic: %s  │  Connected: %s  │  Active: %d  ",
+				formatBytes(upSpeed),
+				formatBytes(downSpeed),
+				formatBytes(totalTraffic),
+				formatDuration(uptime),
+				stats.ActiveConns.Load(),
+			)
+
+			fmt.Print(statusLine)
+		}
+	}
+}
+
+// formatBytes formats bytes into human-readable string
+func formatBytes(b int64) string {
+	const (
+		KB = 1024
+		MB = 1024 * KB
+		GB = 1024 * MB
+	)
+
+	switch {
+	case b >= GB:
+		return fmt.Sprintf("%.1f GB", float64(b)/float64(GB))
+	case b >= MB:
+		return fmt.Sprintf("%.1f MB", float64(b)/float64(MB))
+	case b >= KB:
+		return fmt.Sprintf("%.1f KB", float64(b)/float64(KB))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
+}
+
+// formatDuration formats a duration as HH:MM:SS
+func formatDuration(d time.Duration) string {
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	s := int(d.Seconds()) % 60
+	return fmt.Sprintf("%02d:%02d:%02d", h, m, s)
 }

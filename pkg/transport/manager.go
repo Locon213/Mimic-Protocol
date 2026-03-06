@@ -7,12 +7,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Locon213/Mimic-Protocol/pkg/protocol"
+	"github.com/Locon213/Mimic-Protocol/pkg/mtp"
 	"github.com/hashicorp/yamux"
 )
 
 // Manager handles the lifecycle of underlying network connections
 // and seamless switching between them using Yamux session resumption.
+// Uses MTP (Mimic Transport Protocol) over UDP for anti-DPI transport.
 type Manager struct {
 	serverAddr string
 	uuid       string // Client UUID for Session ID
@@ -21,6 +22,7 @@ type Manager struct {
 	virtualConn *VirtualConn
 
 	currentConn net.Conn
+	mtpConn     *mtp.MTPConn
 	mutex       sync.Mutex
 }
 
@@ -32,7 +34,7 @@ func NewManager(serverAddr string, uuid string) *Manager {
 	}
 }
 
-// StartSession establishes the initial connection and Yamux session
+// StartSession establishes the initial connection and Yamux session over MTP
 func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
@@ -41,27 +43,28 @@ func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 		return m.session, nil
 	}
 
-	// 1. Dial TCP
-	conn, err := protocol.Dial(m.serverAddr, m.uuid)
+	// 1. Dial MTP (UDP)
+	conn, err := mtp.Dial(m.serverAddr, m.uuid)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("mtp dial failed: %w", err)
 	}
 
-	// 2. Handshake with Session ID (UUID)
-	if err := conn.HandshakeClient(initialDomain, m.uuid); err != nil {
-		conn.Close()
-		return nil, err
-	}
-
-	// 3. Wrap in VirtualConn
+	// 2. Wrap in VirtualConn
 	m.currentConn = conn
+	m.mtpConn = conn
 	m.virtualConn = NewVirtualConn(conn)
 
-	// 4. Init Yamux Client
-	session, err := yamux.Client(m.virtualConn, nil)
+	// 3. Init Yamux Client
+	yamuxCfg := yamux.DefaultConfig()
+	yamuxCfg.EnableKeepAlive = true
+	yamuxCfg.KeepAliveInterval = 10 * time.Second
+	yamuxCfg.ConnectionWriteTimeout = 10 * time.Second
+	yamuxCfg.StreamCloseTimeout = 30 * time.Second
+
+	session, err := yamux.Client(m.virtualConn, yamuxCfg)
 	if err != nil {
 		conn.Close()
-		return nil, err
+		return nil, fmt.Errorf("yamux client init failed: %w", err)
 	}
 
 	m.session = session
@@ -69,7 +72,7 @@ func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 }
 
 // RotateTransport switches the underlying transport to a new domain
-// while keeping the Yamux session alive.
+// while keeping the Yamux session alive via MTP session migration.
 func (m *Manager) RotateTransport(newDomain string) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
@@ -78,38 +81,39 @@ func (m *Manager) RotateTransport(newDomain string) error {
 		return fmt.Errorf("session not initialized")
 	}
 
-	log.Printf("[Transport] Rotating transport to %s...", newDomain)
+	log.Printf("[Transport] Rotating transport (MTP migration)...")
 
-	// 1. Dial NEW TCP connection
-	newConn, err := protocol.Dial(m.serverAddr, m.uuid)
+	// 1. Create NEW MTPConn via session migration
+	newConn, err := mtp.DialMigrate(m.serverAddr, m.uuid, m.uuid)
 	if err != nil {
-		return fmt.Errorf("failed to dial new transport: %w", err)
+		return fmt.Errorf("failed to migrate MTP session: %w", err)
 	}
 
-	// 2. Handshake with SAME Session ID
-	// This tells the server to swap the socket under the hood
-	if err := newConn.HandshakeClient(newDomain, m.uuid); err != nil {
-		newConn.Close()
-		return fmt.Errorf("handshake failed for new transport: %w", err)
-	}
-
-	// 3. Swap the connection in VirtualConn
-	// Now Yamux traffic flows through the new socket
+	// 2. Seamless swap the connection in VirtualConn
+	// This buffers any in-flight writes and replays them on the new connection
 	oldConn := m.currentConn
-	m.virtualConn.SwapConnection(newConn)
+	if err := m.virtualConn.SwapConnectionSeamless(newConn); err != nil {
+		newConn.Close()
+		return fmt.Errorf("seamless swap failed: %w", err)
+	}
 	m.currentConn = newConn
+	m.mtpConn = newConn
 
-	// 4. Gracefully close old connection
-	// We wait a bit to ensure any in-flight packets on old conn are handled?
-	// In a perfect world, yes. For now, just close.
-	// Yamux retries might handle lost packets if TCP didn't deliver.
+	// 3. Gracefully close old connection after drain period
 	if oldConn != nil {
 		go func() {
-			time.Sleep(1 * time.Second)
+			time.Sleep(2 * time.Second)
 			oldConn.Close()
 		}()
 	}
 
-	log.Printf("[Transport] Transport rotated successfully to %s", newDomain)
+	log.Printf("[Transport] Transport rotated successfully via MTP migration")
 	return nil
+}
+
+// GetMTPConn returns the current MTP connection (for stats)
+func (m *Manager) GetMTPConn() *mtp.MTPConn {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return m.mtpConn
 }

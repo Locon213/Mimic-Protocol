@@ -37,3 +37,4 @@ Thumbs.db
 # Configuration files
 config.yaml
 .env
+server.yaml
