@@ -6,7 +6,7 @@
 
 **Mimic** — это открытый протокол обхода блокировок, который постоянно меняет своё "цифровое лицо", имитируя трафик различных легитимных сервисов (VK, Rutube, Telegram и др.).
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.25.5-00ADD8.svg)](https://golang.org)
 
 </div>
@@ -32,7 +32,6 @@ Mimic-Protocol/
 │   ├── protocol/       # Ядро протокола (VLESS-like + Mimicry)
 │   └── presets/        # Логика пресетов поведения
 ├── internal/           # Внутренние компоненты
-├── sdk/                # SDK для встраивания в сторонние приложения
 └── docs/               # Документация
 ```
 
@@ -73,8 +72,6 @@ settings:
 - [ ] Оптимизация под VLESS/Reality
 
 ### Этап 3: Экосистема
-- [ ] Android приложение
-- [ ] Публичный SDK
 - [ ] Сеть публичных серверов
 
 ## 📦 Установка и запуск
@@ -96,11 +93,11 @@ go build -o mimic-client ./cmd/client
 ```
 
 ## 🔐 Безопасность
-- **Шифрование:** ChaCha20-Poly1305 / AES-256-GCM
-- **Обмен ключами:** X25519
+- **Шифрование:** Полноценное шифрование AES-128-GCM (внутри TLS 1.3 Application Data рекордов)
+- **Обмен ключами:** Авторизация по UUID
 - **Анонимность:** Сервер не хранит логи активности, клиенты не требуют регистрации (только ключи).
 
 ## 📄 Лицензия
-Проект распространяется под лицензией Apache 2.0. Подробнее см. файл [LICENSE](LICENSE).
+Проект распространяется под лицензией GPLv3. Подробнее см. файл [LICENSE](LICENSE).
 
-Copyright (c) 2025 Locon213 & Contributors.
+Copyright (c) 2025-н.в. Locon213 & Contributors.

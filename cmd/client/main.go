@@ -169,7 +169,10 @@ func runTrafficLoop(state *AppState, stream net.Conn, stop <-chan struct{}) {
 			payload := make([]byte, size)
 			rand.Read(payload)
 
-			// Send data through Yamux stream
+			// Send data through Yamux stream. Yamux multiplexes the stream.
+			// Currently VirtualConn just delegates to `conn.Write(b)`, which writes raw bytes.
+			// But for Mimic to hide Yamux traffic, Yamux writes should be wrapped in TLS records.
+			// So `protocol.Connection.Write` needs to proxy to `WriteTLSRecord`, and `Read` to `ReadTLSRecord`.
 			_, err := stream.Write(payload)
 			if err != nil {
 				log.Printf("Write error: %v", err)

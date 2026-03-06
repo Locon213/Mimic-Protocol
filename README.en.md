@@ -6,7 +6,7 @@
 
 **Mimic** is an open-source censorship circumvention protocol that constantly changes its "digital face" by mimicking the traffic of various legitimate services (VK, Rutube, Telegram, etc.).
 
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+[![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.25.5-00ADD8.svg)](https://golang.org)
 
 </div>
@@ -32,7 +32,6 @@ Mimic-Protocol/
 │   ├── protocol/       # Protocol Core (VLESS-like + Mimicry)
 │   └── presets/        # Behavior presets logic
 ├── internal/           # Internal components
-├── sdk/                # SDK for embedding into third-party apps
 └── docs/               # Documentation
 ```
 
@@ -73,8 +72,6 @@ settings:
 - [ ] Optimization for VLESS/Reality
 
 ### Stage 3: Ecosystem
-- [ ] Android application
-- [ ] Public SDK
 - [ ] Public server network
 
 ## 📦 Installation & Usage
@@ -96,11 +93,11 @@ go build -o mimic-client ./cmd/client
 ```
 
 ## 🔐 Security
-- **Encryption:** ChaCha20-Poly1305 / AES-256-GCM
-- **Key Exchange:** X25519
+- **Encryption:** Full AES-128-GCM encryption (inside TLS 1.3 Application Data records)
+- **Key Exchange:** UUID-based authorization
 - **Anonymity:** Server does not store activity logs, clients do not require registration (keys only).
 
 ## 📄 License
-This project is distributed under the Apache 2.0 License. See [LICENSE](LICENSE) for details.
+This project is distributed under the GPLv3 License. See [LICENSE](LICENSE) for details.
 
-Copyright (c) 2025 Locon213 & Contributors.
+Copyright (c) 2025-present Locon213 & Contributors.

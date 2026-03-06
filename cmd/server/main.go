@@ -9,6 +9,9 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
+
+	"io"
 
 	"github.com/Locon213/Mimic-Protocol/pkg/config"
 	"github.com/Locon213/Mimic-Protocol/pkg/protocol"
@@ -42,6 +45,8 @@ func main() {
 		cfg = &config.ServerConfig{
 			Port:       *port,
 			MaxClients: 100,
+			UUID:       "550e8400-e29b-41d4-a716-446655440000",
+			DomainList: []string{"vk.com", "wikipedia.org"},
 		}
 	} else {
 		if *port != 443 {
@@ -70,7 +75,7 @@ func main() {
 				log.Printf("Accept error: %v", err)
 				continue
 			}
-			go server.handleConnection(conn)
+			go server.handleConnection(conn, cfg)
 		}
 	}()
 
@@ -83,13 +88,18 @@ func main() {
 	listener.Close()
 }
 
-func (s *Server) handleConnection(rawConn net.Conn) {
+func (s *Server) handleConnection(rawConn net.Conn, cfg *config.ServerConfig) {
 	// Wrap connection with Mimic protocol
-	mimicConn := protocol.NewConnection(rawConn)
+	mimicConn := protocol.NewConnection(rawConn, cfg.UUID)
 
 	// 1. Handshake
-	sni, sessionID, err := mimicConn.HandshakeServer()
+	sni, sessionID, peekBytes, err := mimicConn.HandshakeServer()
 	if err != nil {
+		if err.Error() == "fallback" {
+			log.Printf("[%s] Active Probe detected or non-Mimic client. Fallback proxying to %s", rawConn.RemoteAddr(), sni)
+			s.handleFallback(rawConn, peekBytes, sni)
+			return
+		}
 		log.Printf("[%s] Handshake failed: %v", rawConn.RemoteAddr(), err)
 		rawConn.Close()
 		return
@@ -152,7 +162,7 @@ func (s *Server) removeSession(id string) {
 
 func handleStream(stream net.Conn) {
 	defer stream.Close()
-	// Echo logic
+	// Echo logic for testing
 	buf := make([]byte, 4096)
 	for {
 		n, err := stream.Read(buf)
@@ -164,4 +174,47 @@ func handleStream(stream net.Conn) {
 			return
 		}
 	}
+}
+
+// handleFallback transparently proxies the connection to a legitimate site
+func (s *Server) handleFallback(clientConn net.Conn, pendingBytes []byte, sni string) {
+	defer clientConn.Close()
+
+	// Default fallback
+	targetAddr := "vk.com:443"
+	if sni != "" {
+		targetAddr = fmt.Sprintf("%s:443", sni)
+	}
+
+	targetConn, err := net.DialTimeout("tcp", targetAddr, 5*time.Second)
+	if err != nil {
+		log.Printf("[%s] Fallback dial failed: %v", clientConn.RemoteAddr(), err)
+		return
+	}
+	defer targetConn.Close()
+
+	if len(pendingBytes) > 0 {
+		_, err = targetConn.Write(pendingBytes)
+		if err != nil {
+			log.Printf("[%s] Fallback write pending bytes failed: %v", clientConn.RemoteAddr(), err)
+			return
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		io.Copy(targetConn, clientConn)
+		targetConn.(*net.TCPConn).CloseWrite()
+	}()
+
+	go func() {
+		defer wg.Done()
+		io.Copy(clientConn, targetConn)
+		clientConn.(*net.TCPConn).CloseWrite()
+	}()
+
+	wg.Wait()
 }

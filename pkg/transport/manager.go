@@ -42,7 +42,7 @@ func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 	}
 
 	// 1. Dial TCP
-	conn, err := protocol.Dial(m.serverAddr)
+	conn, err := protocol.Dial(m.serverAddr, m.uuid)
 	if err != nil {
 		return nil, err
 	}
@@ -81,7 +81,7 @@ func (m *Manager) RotateTransport(newDomain string) error {
 	log.Printf("[Transport] Rotating transport to %s...", newDomain)
 
 	// 1. Dial NEW TCP connection
-	newConn, err := protocol.Dial(m.serverAddr)
+	newConn, err := protocol.Dial(m.serverAddr, m.uuid)
 	if err != nil {
 		return fmt.Errorf("failed to dial new transport: %w", err)
 	}

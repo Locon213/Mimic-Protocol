@@ -27,11 +27,13 @@ type ClientSettings struct {
 
 // ServerConfig defines the configuration for the Mimic Server
 type ServerConfig struct {
-	Port        int    `yaml:"port"`
-	DomainsFile string `yaml:"domains_file"`
-	PresetsDir  string `yaml:"presets_dir"`
-	MaxClients  int    `yaml:"max_clients"`
-	RateLimit   int    `yaml:"rate_limit"`
+	Port        int      `yaml:"port"`
+	UUID        string   `yaml:"uuid"`
+	DomainList  []string `yaml:"domain_list"`
+	DomainsFile string   `yaml:"domains_file"`
+	PresetsDir  string   `yaml:"presets_dir"`
+	MaxClients  int      `yaml:"max_clients"`
+	RateLimit   int      `yaml:"rate_limit"`
 }
 
 // LoadClientConfig reads and parses the client configuration file
