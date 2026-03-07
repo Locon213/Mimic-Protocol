@@ -391,9 +391,13 @@ func (e *timeoutError) Error() string   { return "mtp: i/o timeout" }
 func (e *timeoutError) Timeout() bool   { return true }
 func (e *timeoutError) Temporary() bool { return true }
 
+type UDPResolver interface {
+	ResolveUDPAddr(network, address string) (*net.UDPAddr, error)
+}
+
 // Dial creates a client-side MTPConn to the given server address
-func Dial(address string, secret string) (*MTPConn, error) {
-	raddr, err := net.ResolveUDPAddr("udp", address)
+func Dial(resolver UDPResolver, address string, secret string) (*MTPConn, error) {
+	raddr, err := resolver.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, fmt.Errorf("mtp: resolve address: %w", err)
 	}
@@ -421,8 +425,8 @@ func Dial(address string, secret string) (*MTPConn, error) {
 }
 
 // DialMigrate creates a new MTPConn for session migration (seamless rotation)
-func DialMigrate(address string, secret string, sessionID string) (*MTPConn, error) {
-	raddr, err := net.ResolveUDPAddr("udp", address)
+func DialMigrate(resolver UDPResolver, address string, secret string, sessionID string) (*MTPConn, error) {
+	raddr, err := resolver.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, fmt.Errorf("mtp: resolve address: %w", err)
 	}

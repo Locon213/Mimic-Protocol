@@ -60,7 +60,7 @@ func main() {
 
 	state := &AppState{
 		cfg: cfg,
-		tm:  transport.NewManager(cfg.Server, cfg.UUID),
+		tm:  transport.NewManager(cfg.Server, cfg.UUID, cfg.DNS),
 	}
 
 	// Initial domain setup

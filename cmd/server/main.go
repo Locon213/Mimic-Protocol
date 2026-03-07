@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/Locon213/Mimic-Protocol/pkg/config"
 	"github.com/Locon213/Mimic-Protocol/pkg/mtp"
+	"github.com/Locon213/Mimic-Protocol/pkg/network"
 	"github.com/Locon213/Mimic-Protocol/pkg/transport"
 	"github.com/google/uuid"
 	"github.com/hashicorp/yamux"
@@ -33,6 +35,7 @@ type Session struct {
 type Server struct {
 	sessions map[string]*Session
 	mutex    sync.RWMutex
+	resolver *network.CachedResolver
 }
 
 func main() {
@@ -86,6 +89,7 @@ func main() {
 
 	server := &Server{
 		sessions: make(map[string]*Session),
+		resolver: network.NewCachedResolver(cfg.DNS, 5*time.Minute),
 	}
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
@@ -181,7 +185,7 @@ func (s *Server) handleMTPConnection(conn net.Conn, cfg *config.ServerConfig) {
 				s.removeSession(sessionID)
 				return
 			}
-			go handleStream(stream)
+			go s.handleStream(stream)
 		}
 	}()
 }
@@ -194,7 +198,7 @@ func (s *Server) removeSession(id string) {
 
 // handleStream processes a stream from the yamux session.
 // First byte determines stream type: 0x01=proxy, 0x02=mimic
-func handleStream(stream net.Conn) {
+func (s *Server) handleStream(stream net.Conn) {
 	defer stream.Close()
 
 	// Read stream type marker (1 byte)
@@ -206,7 +210,7 @@ func handleStream(stream net.Conn) {
 
 	switch typeBuf[0] {
 	case StreamTypeProxy:
-		handleProxyStream(stream)
+		s.handleProxyStream(stream)
 	case StreamTypeMimic:
 		handleMimicStream(stream)
 	default:
@@ -215,7 +219,7 @@ func handleStream(stream net.Conn) {
 }
 
 // handleProxyStream handles a SOCKS5 proxy relay stream
-func handleProxyStream(stream net.Conn) {
+func (s *Server) handleProxyStream(stream net.Conn) {
 	// Read connect header: [1 byte addr_len] [addr_len bytes addr]
 	header := make([]byte, 1)
 	_, err := io.ReadFull(stream, header)
@@ -240,8 +244,11 @@ func handleProxyStream(stream net.Conn) {
 	targetAddr := string(addrBuf)
 	log.Printf("[Proxy] Connecting to %s", targetAddr)
 
-	// Dial target
-	targetConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+	// Dial target using cached resolver
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	targetConn, err := s.resolver.DialContext(ctx, "tcp", targetAddr)
 	if err != nil {
 		log.Printf("[Proxy] Failed to connect to %s: %v", targetAddr, err)
 		stream.Write([]byte{0x00}) // Failure

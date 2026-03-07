@@ -17,6 +17,7 @@ type ClientConfig struct {
 	Settings  ClientSettings `yaml:"settings"`
 	Transport string         `yaml:"transport"`  // "mtp" (default) or "tcp"
 	LocalPort int            `yaml:"local_port"` // SOCKS5 proxy port (default 1080)
+	DNS       string         `yaml:"dns"`        // Custom DNS resolver (e.g. 1.1.1.1:53)
 }
 
 type ClientSettings struct {
@@ -38,6 +39,7 @@ type ServerConfig struct {
 	MaxClients  int      `yaml:"max_clients"`
 	RateLimit   int      `yaml:"rate_limit"`
 	Transport   string   `yaml:"transport"` // "mtp" (default) or "tcp"
+	DNS         string   `yaml:"dns"`       // Custom DNS resolver (e.g. 1.1.1.1:53)
 }
 
 // LoadClientConfig reads and parses the client configuration file

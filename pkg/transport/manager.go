@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Locon213/Mimic-Protocol/pkg/mtp"
+	"github.com/Locon213/Mimic-Protocol/pkg/network"
 	"github.com/hashicorp/yamux"
 )
 
@@ -24,13 +25,16 @@ type Manager struct {
 	currentConn net.Conn
 	mtpConn     *mtp.MTPConn
 	mutex       sync.Mutex
+
+	resolver *network.CachedResolver
 }
 
 // NewManager creates a new transport manager
-func NewManager(serverAddr string, uuid string) *Manager {
+func NewManager(serverAddr string, uuid string, dns string) *Manager {
 	return &Manager{
 		serverAddr: serverAddr,
 		uuid:       uuid,
+		resolver:   network.NewCachedResolver(dns, 5*time.Minute),
 	}
 }
 
@@ -44,7 +48,7 @@ func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 	}
 
 	// 1. Dial MTP (UDP)
-	conn, err := mtp.Dial(m.serverAddr, m.uuid)
+	conn, err := mtp.Dial(m.resolver, m.serverAddr, m.uuid)
 	if err != nil {
 		return nil, fmt.Errorf("mtp dial failed: %w", err)
 	}
@@ -84,7 +88,7 @@ func (m *Manager) RotateTransport(newDomain string) error {
 	log.Printf("[Transport] Rotating transport (MTP migration)...")
 
 	// 1. Create NEW MTPConn via session migration
-	newConn, err := mtp.DialMigrate(m.serverAddr, m.uuid, m.uuid)
+	newConn, err := mtp.DialMigrate(m.resolver, m.serverAddr, m.uuid, m.uuid)
 	if err != nil {
 		return fmt.Errorf("failed to migrate MTP session: %w", err)
 	}
