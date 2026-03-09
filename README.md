@@ -147,6 +147,9 @@ go build -o server ./cmd/server
 go build -o client ./cmd/client
 ```
 
+### Использование как Go SDK
+Вы можете встроить клиент Mimic Protocol в собственное Go-приложение (например, GUI или мобильное приложение). Подробнее см. **[Документацию по SDK](docs/sdk.md)**.
+
 ### Генерация UUID
 
 ```bash

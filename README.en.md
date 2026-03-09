@@ -135,7 +135,7 @@ The project relies on the following powerful open-source libraries:
 
 ## 🚀 Usage
 
-### Build from source
+### Building from Source
 
 ```bash
 # Clone
@@ -147,7 +147,10 @@ go build -o server ./cmd/server
 go build -o client ./cmd/client
 ```
 
-### Generate UUID
+### Using as a Go SDK
+You can seamlessly embed the Mimic Protocol Client into your own Go application (e.g., GUI or mobile wrapper). See the **[SDK Documentation](docs/sdk.md)**.
+
+### Generating UUID
 
 ```bash
 ./server generate-uuid

@@ -16,9 +16,16 @@ type ClientConfig struct {
 	Domains   []string       `yaml:"domains"`
 	Settings  ClientSettings `yaml:"settings"`
 	Transport string         `yaml:"transport"`  // "mtp" (default) or "tcp"
-	LocalPort int            `yaml:"local_port"` // SOCKS5 proxy port (default 1080)
+	LocalPort int            `yaml:"local_port"` // Deprecated: SOCKS5 proxy port (default 1080). Use Proxies instead.
+	Proxies   []ProxyConfig  `yaml:"proxies"`    // List of local proxies to start (e.g. socks5, http)
 	DNS       string         `yaml:"dns"`        // Custom DNS resolver (e.g. 1.1.1.1:53)
 	Routing   RoutingConfig  `yaml:"routing"`    // Routing rules
+}
+
+// ProxyConfig defines a local proxy endpoint
+type ProxyConfig struct {
+	Type string `yaml:"type"` // "socks5", "http"
+	Port int    `yaml:"port"` // Listen port
 }
 
 // RoutingConfig defines routing engine rules for the client
@@ -75,9 +82,19 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 	if cfg.Transport == "" {
 		cfg.Transport = "mtp"
 	}
-	if cfg.LocalPort == 0 {
-		cfg.LocalPort = 1080
+
+	// Legacy support for single local_port
+	if len(cfg.Proxies) == 0 {
+		port := cfg.LocalPort
+		if port == 0 {
+			port = 1080
+		}
+		cfg.Proxies = append(cfg.Proxies, ProxyConfig{
+			Type: "socks5",
+			Port: port,
+		})
 	}
+
 	if cfg.Routing.DefaultPolicy == "" {
 		cfg.Routing.DefaultPolicy = "proxy"
 	}
