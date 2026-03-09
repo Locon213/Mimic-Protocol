@@ -1,6 +1,7 @@
 # Mimic Protocol
 
 <div align="center">
+  <img src="assets/logo.png" alt="Mimic Protocol Logo" width="200"/>
 
 **[🇷🇺 Русский](README.md) | [🇺🇸 English](README.en.md)**
 
