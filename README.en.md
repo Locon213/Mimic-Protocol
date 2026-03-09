@@ -91,8 +91,9 @@ Mimic-Protocol/
 1. The user defines a list of "allowed" domains (e.g., `vk.com`, `rutube.ru`).
 2. Mimic establishes an **MTP connection** (UDP) to the server.
 3. **yamux** runs on top of MTP for stream multiplexing.
-4. The client provides a **SOCKS5 proxy** (`127.0.0.1:1080`) for the browser.
-5. Every 30-600 seconds, a **seamless transport rotation** occurs.
+4. The client provides a **SOCKS5 proxy** (`127.0.0.1:1080`) with full **UDP Associate** support (online games, DNS, WebRTC work over the tunnel).
+5. A **Built-in Routing Engine** flexibly categorizes traffic (`direct`, `proxy`, `block`) via rules.
+6. Every 30-600 seconds, a **seamless transport rotation** occurs.
 
 ### Configuration
 Example `config.yaml` for client:
@@ -100,7 +101,18 @@ Example `config.yaml` for client:
 ```yaml
 server: "your-mimic-server.com:443"
 uuid: "your-uuid-here"
-local_port: 1080  # SOCKS5 proxy port
+local_port: 1080  # SOCKS5 proxy port (TCP/UDP)
+
+# Routing Engine (Optional)
+routing:
+  default_policy: proxy
+  rules:
+    - type: domain_suffix
+      value: ru
+      policy: direct
+    - type: ip_cidr
+      value: 127.0.0.0/8
+      policy: block
 
 domains:
   - vk.com          # Preset "social"

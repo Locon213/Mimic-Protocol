@@ -16,6 +16,7 @@ import (
 	"github.com/Locon213/Mimic-Protocol/pkg/mimic"
 	"github.com/Locon213/Mimic-Protocol/pkg/presets"
 	"github.com/Locon213/Mimic-Protocol/pkg/proxy"
+	"github.com/Locon213/Mimic-Protocol/pkg/routing"
 	"github.com/Locon213/Mimic-Protocol/pkg/transport"
 )
 
@@ -77,9 +78,20 @@ func main() {
 	fmt.Println("✅ Session established!")
 	fmt.Println("────────────────────────────────────────────────")
 
-	// 3. Start SOCKS5 proxy
+	// 3. Initialize Routing Engine
+	var rules []*routing.Rule
+	for _, r := range cfg.Routing.Rules {
+		rules = append(rules, &routing.Rule{
+			Type:   r.Type,
+			Value:  r.Value,
+			Policy: routing.Policy(r.Policy),
+		})
+	}
+	router := routing.NewRouter(rules, routing.Policy(cfg.Routing.DefaultPolicy))
+
+	// 4. Start SOCKS5 proxy
 	bindAddr := fmt.Sprintf("127.0.0.1:%d", cfg.LocalPort)
-	socks5, err := proxy.NewSOCKS5Server(bindAddr, session)
+	socks5, err := proxy.NewSOCKS5Server(bindAddr, session, router)
 	if err != nil {
 		log.Fatalf("❌ Failed to start SOCKS5 proxy: %v", err)
 	}

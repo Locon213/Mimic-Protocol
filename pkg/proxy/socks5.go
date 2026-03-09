@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Locon213/Mimic-Protocol/pkg/routing"
 	"github.com/hashicorp/yamux"
 )
 
@@ -17,12 +18,13 @@ const StreamTypeProxy = 0x01
 
 // SOCKS5 protocol constants
 const (
-	socks5Version    = 0x05
-	socks5AuthNone   = 0x00
-	socks5CmdConnect = 0x01
-	socks5AddrIPv4   = 0x01
-	socks5AddrDomain = 0x03
-	socks5AddrIPv6   = 0x04
+	socks5Version     = 0x05
+	socks5AuthNone    = 0x00
+	socks5CmdConnect  = 0x01
+	socks5CmdUDPAssoc = 0x03
+	socks5AddrIPv4    = 0x01
+	socks5AddrDomain  = 0x03
+	socks5AddrIPv6    = 0x04
 )
 
 // Stats tracks proxy traffic statistics
@@ -38,13 +40,14 @@ type Stats struct {
 type SOCKS5Server struct {
 	listener  net.Listener
 	session   *yamux.Session
+	router    *routing.Router
 	stats     *Stats
 	closeCh   chan struct{}
 	closeOnce sync.Once
 }
 
 // NewSOCKS5Server creates a new SOCKS5 proxy server
-func NewSOCKS5Server(bindAddr string, session *yamux.Session) (*SOCKS5Server, error) {
+func NewSOCKS5Server(bindAddr string, session *yamux.Session, router *routing.Router) (*SOCKS5Server, error) {
 	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
 		return nil, fmt.Errorf("socks5: bind failed: %w", err)
@@ -53,6 +56,7 @@ func NewSOCKS5Server(bindAddr string, session *yamux.Session) (*SOCKS5Server, er
 	s := &SOCKS5Server{
 		listener: listener,
 		session:  session,
+		router:   router,
 		stats: &Stats{
 			ConnectedAt: time.Now(),
 		},
@@ -147,11 +151,13 @@ func (s *SOCKS5Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	if buf[0] != socks5Version || buf[1] != socks5CmdConnect {
+	if buf[0] != socks5Version || (buf[1] != socks5CmdConnect && buf[1] != socks5CmdUDPAssoc) {
 		log.Printf("[SOCKS5] Unsupported command: 0x%02x", buf[1])
 		conn.Write([]byte{socks5Version, 0x07, 0x00, socks5AddrIPv4, 0, 0, 0, 0, 0, 0})
 		return
 	}
+
+	cmd := buf[1]
 
 	// 4. Parse target address
 	var targetAddr string
@@ -186,8 +192,53 @@ func (s *SOCKS5Server) handleConn(conn net.Conn) {
 		return
 	}
 
+	if cmd == socks5CmdUDPAssoc {
+		s.handleUDPAssociate(conn)
+		return
+	}
+
 	log.Printf("[SOCKS5] CONNECT %s", targetAddr)
 
+	// Routing Decision
+	policy := routing.Proxy
+	if s.router != nil {
+		policy = s.router.Route(targetAddr)
+	}
+
+	if policy == routing.Block {
+		log.Printf("[SOCKS5] BLOCKED %s", targetAddr)
+		conn.Write([]byte{socks5Version, 0x02, 0x00, socks5AddrIPv4, 0, 0, 0, 0, 0, 0})
+		return
+	}
+
+	if policy == routing.Direct {
+		log.Printf("[SOCKS5] DIRECT %s", targetAddr)
+		targetConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+		if err != nil {
+			log.Printf("[SOCKS5] DIRECT dial failed: %v", err)
+			conn.Write([]byte{socks5Version, 0x05, 0x00, socks5AddrIPv4, 0, 0, 0, 0, 0, 0})
+			return
+		}
+
+		conn.Write([]byte{socks5Version, 0x00, 0x00, socks5AddrIPv4, 0, 0, 0, 0, 0, 0})
+
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			io.Copy(&trackingWriter{w: targetConn, counter: &s.stats.BytesUp}, conn)
+			targetConn.Close()
+		}()
+		go func() {
+			defer wg.Done()
+			io.Copy(&trackingWriter{w: conn, counter: &s.stats.BytesDown}, targetConn)
+			conn.Close()
+		}()
+		wg.Wait()
+		return
+	}
+
+	// PROXY via Yamux
 	// 5. Open yamux stream to server
 	stream, err := s.session.Open()
 	if err != nil {

@@ -8,6 +8,7 @@ require (
 	github.com/klauspost/reedsolomon v1.13.2
 	github.com/refraction-networking/utls v1.8.2
 	golang.org/x/crypto v0.36.0
+	golang.org/x/net v0.38.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 

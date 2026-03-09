@@ -18,6 +18,20 @@ type ClientConfig struct {
 	Transport string         `yaml:"transport"`  // "mtp" (default) or "tcp"
 	LocalPort int            `yaml:"local_port"` // SOCKS5 proxy port (default 1080)
 	DNS       string         `yaml:"dns"`        // Custom DNS resolver (e.g. 1.1.1.1:53)
+	Routing   RoutingConfig  `yaml:"routing"`    // Routing rules
+}
+
+// RoutingConfig defines routing engine rules for the client
+type RoutingConfig struct {
+	DefaultPolicy string        `yaml:"default_policy"` // "proxy" (default) or "direct" or "block"
+	Rules         []RoutingRule `yaml:"rules"`
+}
+
+// RoutingRule defines a single rule
+type RoutingRule struct {
+	Type   string `yaml:"type"`   // "domain_suffix", "domain_keyword", "ip_cidr"
+	Value  string `yaml:"value"`  // e.g. "google.com" or "192.168.0.0/16"
+	Policy string `yaml:"policy"` // "proxy", "direct", "block"
 }
 
 type ClientSettings struct {
@@ -63,6 +77,9 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 	}
 	if cfg.LocalPort == 0 {
 		cfg.LocalPort = 1080
+	}
+	if cfg.Routing.DefaultPolicy == "" {
+		cfg.Routing.DefaultPolicy = "proxy"
 	}
 
 	// Validation

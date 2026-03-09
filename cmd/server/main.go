@@ -24,6 +24,7 @@ import (
 const (
 	StreamTypeProxy = 0x01 // SOCKS5 proxy relay
 	StreamTypeMimic = 0x02 // Mimic traffic (echo)
+	StreamTypeUDP   = 0x03 // UDP Associate tunneling
 )
 
 type Session struct {
@@ -213,6 +214,8 @@ func (s *Server) handleStream(stream net.Conn) {
 		s.handleProxyStream(stream)
 	case StreamTypeMimic:
 		handleMimicStream(stream)
+	case StreamTypeUDP:
+		s.handleUDPStream(stream)
 	default:
 		log.Printf("[Stream] Unknown stream type: 0x%02x", typeBuf[0])
 	}
@@ -291,4 +294,81 @@ func handleMimicStream(stream net.Conn) {
 			return
 		}
 	}
+}
+
+// handleUDPStream handles UDP encapsulating over Yamux stream
+func (s *Server) handleUDPStream(stream net.Conn) {
+	// Read connect header: [1 byte addrLen] [addrLen bytes targetAddr]
+	header := make([]byte, 1)
+	if _, err := io.ReadFull(stream, header); err != nil {
+		log.Printf("[UDP] Failed to read addr length: %v", err)
+		return
+	}
+
+	addrLen := int(header[0])
+	if addrLen == 0 || addrLen > 253 {
+		log.Printf("[UDP] Invalid addr length: %d", addrLen)
+		return
+	}
+
+	addrBuf := make([]byte, addrLen)
+	if _, err := io.ReadFull(stream, addrBuf); err != nil {
+		log.Printf("[UDP] Failed to read addr: %v", err)
+		return
+	}
+	targetAddr := string(addrBuf)
+
+	// Read data length: [2 bytes dataLen]
+	dataLenBuf := make([]byte, 2)
+	if _, err := io.ReadFull(stream, dataLenBuf); err != nil {
+		log.Printf("[UDP] Failed to read data length: %v", err)
+		return
+	}
+	dataLen := int(dataLenBuf[0])<<8 | int(dataLenBuf[1])
+
+	// Read data
+	data := make([]byte, dataLen)
+	if _, err := io.ReadFull(stream, data); err != nil {
+		log.Printf("[UDP] Failed to read datagram: %v", err)
+		return
+	}
+
+	// For simple asymmetric NAT scenarios: Dial UDP directly and read the response.
+	// For full symmetric NAT routing we'd keep a map of `net.Conn` attached to the Yamux Session.
+	log.Printf("[UDP] Relaying datagram (%d bytes) to %s", dataLen, targetAddr)
+
+	// Our resolver currently only supports standard network lookups
+	// For simplicity in this iteration we'll rely on the default net.ResolveUDPAddr
+	resolvedAddr, err := net.ResolveUDPAddr("udp", targetAddr)
+	if err != nil {
+		log.Printf("[UDP] Failed to resolve %s: %v", targetAddr, err)
+		return
+	}
+
+	targetConn, err := net.DialUDP("udp", nil, resolvedAddr)
+	if err != nil {
+		log.Printf("[UDP] Failed to dial %s: %v", targetAddr, err)
+		return
+	}
+	defer targetConn.Close()
+
+	targetConn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := targetConn.Write(data); err != nil {
+		return
+	}
+
+	// Read response
+	respBuf := make([]byte, 65535)
+	rn, err := targetConn.Read(respBuf)
+	if err != nil {
+		return // timeout or closed
+	}
+
+	// Send back to client: [2 bytes RespLen] [RespData]
+	respHeader := make([]byte, 2)
+	respHeader[0] = byte(rn >> 8)
+	respHeader[1] = byte(rn & 0xFF)
+
+	stream.Write(respHeader)
+	stream.Write(respBuf[:rn])
 }

@@ -91,8 +91,9 @@ Mimic-Protocol/
 1. Пользователь задает список "белых" доменов (например, `vk.com`, `rutube.ru`).
 2. Mimic устанавливает **MTP-соединение** (UDP) с сервером.
 3. Поверх MTP работает **yamux** для мультиплексирования потоков.
-4. Клиент предоставляет **SOCKS5 прокси** (`127.0.0.1:1080`) для браузера.
-5. Каждые 30-600 секунд происходит **бесшовная ротация** транспорта.
+4. Клиент поднимает **SOCKS5 прокси** (`127.0.0.1:1080`) с полной поддержкой **UDP Associate** (онлайн игры, DNS, WebRTC работают через туннель).
+5. **Встроенный Routing Engine** гибко направляет трафик (`direct`, `proxy`, `block`) по правилам.
+6. Каждые 30-600 секунд происходит **бесшовная ротация** транспорта.
 
 ### Конфигурация
 Пример `config.yaml` для клиента:
@@ -100,7 +101,18 @@ Mimic-Protocol/
 ```yaml
 server: "your-mimic-server.com:443"
 uuid: "your-uuid-here"
-local_port: 1080  # Порт SOCKS5 прокси
+local_port: 1080  # Порт SOCKS5 прокси с поддержкой TCP/UDP
+
+# Движок маршрутизации (Опционально)
+routing:
+  default_policy: proxy
+  rules:
+    - type: domain_suffix
+      value: ru
+      policy: direct
+    - type: ip_cidr
+      value: 127.0.0.0/8
+      policy: block
 
 domains:
   - vk.com          # Пресет "social"
