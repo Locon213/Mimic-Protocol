@@ -11,15 +11,16 @@ import (
 
 // ClientConfig defines the configuration for the Mimic Client
 type ClientConfig struct {
-	Server    string         `yaml:"server"`
-	UUID      string         `yaml:"uuid"`
-	Domains   []string       `yaml:"domains"`
-	Settings  ClientSettings `yaml:"settings"`
-	Transport string         `yaml:"transport"`  // "mtp" (default) or "tcp"
-	LocalPort int            `yaml:"local_port"` // Deprecated: SOCKS5 proxy port (default 1080). Use Proxies instead.
-	Proxies   []ProxyConfig  `yaml:"proxies"`    // List of local proxies to start (e.g. socks5, http)
-	DNS       string         `yaml:"dns"`        // Custom DNS resolver (e.g. 1.1.1.1:53)
-	Routing   RoutingConfig  `yaml:"routing"`    // Routing rules
+	Server     string         `yaml:"server"`
+	ServerName string         `yaml:"server_name"`
+	UUID       string         `yaml:"uuid"`
+	Domains    []string       `yaml:"domains"`
+	Settings   ClientSettings `yaml:"settings"`
+	Transport  string         `yaml:"transport"`  // "mtp" (default) or "tcp"
+	LocalPort  int            `yaml:"local_port"` // Deprecated: SOCKS5 proxy port (default 1080). Use Proxies instead.
+	Proxies    []ProxyConfig  `yaml:"proxies"`    // List of local proxies to start (e.g. socks5, http)
+	DNS        string         `yaml:"dns"`        // Custom DNS resolver (e.g. 1.1.1.1:53)
+	Routing    RoutingConfig  `yaml:"routing"`    // Routing rules
 }
 
 // ProxyConfig defines a local proxy endpoint
@@ -52,6 +53,7 @@ type ClientSettings struct {
 
 // ServerConfig defines the configuration for the Mimic Server
 type ServerConfig struct {
+	Name        string   `yaml:"name"`
 	Port        int      `yaml:"port"`
 	UUID        string   `yaml:"uuid"`
 	DomainList  []string `yaml:"domain_list"`

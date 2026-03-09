@@ -16,30 +16,45 @@ import (
 
 func main() {
 	configPath := flag.String("config", "config.yaml", "Path to configuration file")
+	urlStr := flag.String("url", "", "Mimic URL configuration (e.g., mimic://...)")
 	flag.Parse()
 
 	fmt.Println("╔══════════════════════════════════════════════╗")
 	fmt.Println("║           Mimic Client v0.3.0 (MTP)         ║")
 	fmt.Println("╚══════════════════════════════════════════════╝")
 
-	// 1. Load configuration
-	cfg, err := config.LoadClientConfig(*configPath)
-	if err != nil {
-		log.Printf("Warning: could not load config file: %v", err)
-		log.Println("Using default configuration for demo...")
-		cfg = &config.ClientConfig{
-			Server:  "localhost:8080",
-			UUID:    "demo-uuid-12345",
-			Domains: []string{"vk.com", "rutube.ru", "telegram.org"},
-			Settings: config.ClientSettings{
-				SwitchMin: 10 * time.Second,
-				SwitchMax: 30 * time.Second,
-			},
-			Transport: "mtp",
-			Proxies: []config.ProxyConfig{
-				{Type: "socks5", Port: 1080},
-				{Type: "http", Port: 1081},
-			},
+	var cfg *config.ClientConfig
+	var err error
+
+	if *urlStr != "" {
+		cfg, err = config.ParseMimicURL(*urlStr)
+		if err != nil {
+			log.Fatalf("❌ Failed to parse URL: %v", err)
+		}
+		log.Printf("✅ Loaded configuration from URL")
+		if cfg.ServerName != "" {
+			log.Printf("🏢 Server Name: %s", cfg.ServerName)
+		}
+	} else {
+		// 1. Load configuration from file
+		cfg, err = config.LoadClientConfig(*configPath)
+		if err != nil {
+			log.Printf("Warning: could not load config file: %v", err)
+			log.Println("Using default configuration for demo...")
+			cfg = &config.ClientConfig{
+				Server:  "localhost:8080",
+				UUID:    "demo-uuid-12345",
+				Domains: []string{"vk.com", "rutube.ru", "telegram.org"},
+				Settings: config.ClientSettings{
+					SwitchMin: 10 * time.Second,
+					SwitchMax: 30 * time.Second,
+				},
+				Transport: "mtp",
+				Proxies: []config.ProxyConfig{
+					{Type: "socks5", Port: 1080},
+					{Type: "http", Port: 1081},
+				},
+			}
 		}
 	}
 

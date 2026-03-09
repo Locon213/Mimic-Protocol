@@ -41,10 +41,34 @@ type Server struct {
 
 func main() {
 	// Check for subcommands
-	if len(os.Args) > 1 && os.Args[1] == "generate-uuid" {
-		id := uuid.New()
-		fmt.Println(id.String())
-		return
+	if len(os.Args) > 1 {
+		if os.Args[1] == "generate-uuid" {
+			id := uuid.New()
+			fmt.Println(id.String())
+			return
+		}
+		if os.Args[1] == "generate-link" {
+			configPath := "server.yaml"
+			if len(os.Args) > 2 {
+				configPath = os.Args[2]
+			}
+			cfg, err := config.LoadServerConfig(configPath)
+			if err != nil {
+				log.Fatalf("Failed to load config %s: %v", configPath, err)
+			}
+
+			// Ideally, we'd detect the public IP here. For now, we'll use a placeholder
+			// unless the user configured a specific bind address (not just port).
+			host := "YOUR_SERVER_IP"
+
+			link := config.GenerateMimicURL(cfg.UUID, fmt.Sprintf("%s:%d", host, cfg.Port), cfg.Name, cfg.DomainList, cfg.Transport, cfg.DNS)
+			fmt.Println("\n================================================================")
+			fmt.Println("🚀 Share this link with clients to connect:")
+			fmt.Println()
+			fmt.Println(link)
+			fmt.Println("================================================================")
+			return
+		}
 	}
 
 	// Parse flags manually

@@ -18,6 +18,7 @@ function Show-Help {
     Write-Host "  restart-server  - Restarts the Mimic server service"
     Write-Host "  status-server   - Checks if the server is running"
     Write-Host "  generate-uuid   - Generates a new random UUID"
+    Write-Host "  generate-link   - Generates a mimic:// connection URI for clients"
     Write-Host "  config_path     - Prints the config file path or opens it if possible"
 }
 
@@ -77,6 +78,13 @@ switch ($Action) {
         $UUID = [guid]::NewGuid().ToString()
         Write-Host "New UUID generated: $UUID" -ForegroundColor Cyan
         Write-Host "Remember to update your config in: $ConfigPath" -ForegroundColor Yellow
+    }
+    "generate-link" {
+        if (Test-Path $BinaryPath) {
+            & $BinaryPath generate-link $ConfigPath
+        } else {
+            Write-Host "Error: mimic-server.exe not found at $BinaryPath." -ForegroundColor Red
+        }
     }
     "config_path" {
         Write-Host "Opening $ConfigPath in Notepad..."

@@ -13,6 +13,7 @@ show_help() {
     echo "  reload-server   - Reloads Systemd daemon and restarts server"
     echo "  status-server   - Prints the current status of the server"
     echo "  generate-uuid   - Generates a new MTP compatible UUID"
+    echo "  generate-link   - Generates a mimic:// connection URI for clients"
     echo "  config_path     - Prints the location of the configuration file"
 }
 
@@ -46,6 +47,13 @@ case "$1" in
             NEW_UUID=$(mimic-server generate-uuid)
             echo "New UUID generated: $NEW_UUID"
             echo "Remember to update your config in: $CONFIG_FILE"
+        else
+            echo "Error: mimic-server binary not found in PATH."
+        fi
+        ;;
+    generate-link)
+        if command -v mimic-server >/dev/null 2>&1; then
+            mimic-server generate-link $CONFIG_FILE
         else
             echo "Error: mimic-server binary not found in PATH."
         fi

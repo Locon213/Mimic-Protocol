@@ -11,6 +11,29 @@ go get github.com/Locon213/Mimic-Protocol/pkg/client
 go get github.com/Locon213/Mimic-Protocol/pkg/config
 ```
 
+```
+
+## Configuration URLs (VLESS-like)
+
+Mimic supports sharing server configurations through a single URI format (`mimic://...`), similar to VLESS/VMess links. 
+
+### Generating a Link
+From the server:
+```bash
+mimic-server generate-link server.yaml
+```
+Output: `mimic://<uuid>@<server_ip>:<port>?domains=vk.com&transport=mtp#MyServer`
+
+### Using a Link in Client
+```go
+cfg, err := config.ParseMimicURL("mimic://uuid@ip:port?domains=vk.com#MyServer")
+if err != nil {
+    log.Fatal(err)
+}
+mimicClient, err := client.NewClient(cfg)
+```
+Or via CLI command: `mimic-client -url "mimic://...#MyServer"`
+
 ## Basic Example
 
 Here is a minimal example of how to start the Mimic Client inside another application.
