@@ -39,19 +39,19 @@ jobs:
         mkdir -p dist
         
         # Build Server (Linux AMD64)
-        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/mimic-server-linux-amd64 ./cmd/server
+        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X github.com/Locon213/Mimic-Protocol/pkg/version.Version=$VERSION" -o dist/mimic-server-linux-amd64 ./cmd/server
         
         # Build Server (Linux ARM64)
-        GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o dist/mimic-server-linux-arm64 ./cmd/server
+        GOOS=linux GOARCH=arm64 go build -ldflags="-s -w -X github.com/Locon213/Mimic-Protocol/pkg/version.Version=$VERSION" -o dist/mimic-server-linux-arm64 ./cmd/server
         
         # Build Client (Linux AMD64)
-        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w" -o dist/mimic-client-linux-amd64 ./cmd/client
+        GOOS=linux GOARCH=amd64 go build -ldflags="-s -w -X github.com/Locon213/Mimic-Protocol/pkg/version.Version=$VERSION" -o dist/mimic-client-linux-amd64 ./cmd/client
         
         # Build Client (Windows AMD64)
-        GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/mimic-client-windows-amd64.exe ./cmd/client
+        GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X github.com/Locon213/Mimic-Protocol/pkg/version.Version=$VERSION" -o dist/mimic-client-windows-amd64.exe ./cmd/client
 
         # Build Server (Windows AMD64)
-        GOOS=windows GOARCH=amd64 go build -ldflags="-s -w" -o dist/mimic-server-windows-amd64.exe ./cmd/server
+        GOOS=windows GOARCH=amd64 go build -ldflags="-s -w -X github.com/Locon213/Mimic-Protocol/pkg/version.Version=$VERSION" -o dist/mimic-server-windows-amd64.exe ./cmd/server
 
     - name: Create Release
       uses: softprops/action-gh-release@v2

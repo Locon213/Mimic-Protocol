@@ -121,3 +121,49 @@ Binds to local ports as specified in the `Proxies` configuration array. Starts l
 
 ### `Stop()`
 Gracefully shuts down all local proxies, the `yamux` multiplexer, the UDP connection, and terminates all background goroutines. This is safe to call during your application's teardown phase.
+
+## Additional SDK Functions
+
+### `SendSpeedData(ctx context.Context, downloadSpeed, uploadSpeed int64, pingMs int64) error`
+Sends download/upload speed and ping data to the server via MTP protocol. This allows the server to monitor connection quality and make dynamic routing decisions.
+
+### `GetNetworkStats() NetworkStats`
+Returns current network statistics, including:
+- `DownloadSpeed` - download speed (bytes/sec)
+- `UploadSpeed` - upload speed (bytes/sec)
+- `Ping` - ping to server (ms)
+- `TotalDownload` - total downloaded (bytes)
+- `TotalUpload` - total uploaded (bytes)
+
+### `GetConnectionStatus() ConnectionStatus`
+Returns current connection status: `disconnected`, `connecting`, `connected`, or `reconnecting`.
+
+### `GetSessionInfo() *SessionInfo`
+Returns information about the current session:
+- Connection time
+- Server address
+- UUID
+- Transport
+- Current disguise domain
+- Uptime
+
+### `GetTrafficStats() (totalDownload, totalUpload int64)`
+Returns total traffic volume (downloaded/uploaded) for the session.
+
+### `GetCurrentDomain() string`
+Returns the currently active disguise domain (SNI).
+
+### `Reconnect(ctx context.Context) error`
+Reconnects to the server. Useful when changing networks or recovering from connection loss.
+
+### `GetServerInfo() map[string]interface{}`
+Returns server configuration information (address, domains, UUID, transport, DNS).
+
+### `SetTrafficCallback(callback TrafficCallback)`
+Sets a callback function that will be called when traffic statistics are updated. Allows UI applications to receive real-time speed data.
+
+### `IsConnected() bool`
+Returns `true` if the client is connected to the server.
+
+### `GetVersion() string`
+Returns the current SDK version. When built via GitHub Release, returns the version (e.g., `v0.3.2`), for local builds returns `dev version`.

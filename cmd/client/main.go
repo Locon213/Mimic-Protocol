@@ -12,6 +12,7 @@ import (
 
 	"github.com/Locon213/Mimic-Protocol/pkg/client"
 	"github.com/Locon213/Mimic-Protocol/pkg/config"
+	"github.com/Locon213/Mimic-Protocol/pkg/version"
 )
 
 func main() {
@@ -19,8 +20,9 @@ func main() {
 	urlStr := flag.String("url", "", "Mimic URL configuration (e.g., mimic://...)")
 	flag.Parse()
 
+	ver := version.GetVersion()
 	fmt.Println("╔══════════════════════════════════════════════╗")
-	fmt.Println("║           Mimic Client v0.3.0 (MTP)         ║")
+	fmt.Printf("║           Mimic Client %s (MTP)         ║\n", ver)
 	fmt.Println("╚══════════════════════════════════════════════╝")
 
 	var cfg *config.ClientConfig

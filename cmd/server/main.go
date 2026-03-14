@@ -16,6 +16,7 @@ import (
 	"github.com/Locon213/Mimic-Protocol/pkg/mtp"
 	"github.com/Locon213/Mimic-Protocol/pkg/network"
 	"github.com/Locon213/Mimic-Protocol/pkg/transport"
+	"github.com/Locon213/Mimic-Protocol/pkg/version"
 	"github.com/google/uuid"
 	"github.com/hashicorp/yamux"
 )
@@ -90,8 +91,9 @@ func main() {
 		}
 	}
 
+	ver := version.GetVersion()
 	fmt.Println("╔══════════════════════════════════════════════╗")
-	fmt.Println("║           Mimic Server v0.2.0 (MTP)         ║")
+	fmt.Printf("║           Mimic Server %s (MTP)         ║\n", ver)
 	fmt.Println("╚══════════════════════════════════════════════╝")
 
 	// 1. Load configuration
