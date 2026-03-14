@@ -2,12 +2,19 @@ package client
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Locon213/Mimic-Protocol/pkg/config"
+	"github.com/Locon213/Mimic-Protocol/pkg/mtp"
+	"github.com/Locon213/Mimic-Protocol/pkg/network"
+	"github.com/Locon213/Mimic-Protocol/pkg/proxy"
+	"github.com/Locon213/Mimic-Protocol/pkg/routing"
 	"github.com/Locon213/Mimic-Protocol/pkg/version"
+	"github.com/hashicorp/yamux"
 )
 
 // ConnectionStatus represents the current connection state
@@ -75,13 +82,14 @@ type Client struct {
 	// Callbacks
 	trafficCallback TrafficCallback
 
-	// Internal
+	// internal
 	ctx    context.Context
 	cancel context.CancelFunc
 	wg     sync.WaitGroup
 
-	// MTP connection (placeholder - would be implemented in actual transport)
-	mtpConn interface{}
+	// MTP & Tunnel
+	session *yamux.Session
+	proxies []interface{ Close() error }
 }
 
 // NewClient creates a new Mimic client instance
@@ -119,18 +127,32 @@ func (c *Client) Start(ctx context.Context) error {
 
 	c.status.Store(int32(StatusConnecting))
 
-	// In a real implementation, this would:
-	// 1. Establish UDP connection to server
-	// 2. Perform handshake
-	// 3. Start yamux multiplexer
-	// 4. Start background tasks (domain rolling, dummy traffic)
+	// 1. Initialize Resolver
+	resolver := network.NewCachedResolver(c.cfg.DNS, 10*time.Minute)
 
+	// 2. Connect via MTP
+	mtpConn, err := mtp.Dial(resolver, c.cfg.Server, c.cfg.UUID)
+	if err != nil {
+		c.status.Store(int32(StatusDisconnected))
+		return fmt.Errorf("mtp dial failed: %w", err)
+	}
+
+	// 3. Start yamux session
+	session, err := yamux.Client(mtpConn, nil)
+	if err != nil {
+		mtpConn.Close()
+		c.status.Store(int32(StatusDisconnected))
+		return fmt.Errorf("yamux session failed: %w", err)
+	}
+
+	c.session = session
 	c.connectedAt = time.Now()
 	c.status.Store(int32(StatusConnected))
 
 	// Start statistics collection
-	c.wg.Go(c.collectStats)
+	go c.collectStats()
 
+	log.Printf("✅ Connected to %s via MTP", c.cfg.Server)
 	return nil
 }
 
@@ -141,12 +163,24 @@ func (c *Client) Stop() {
 	}
 
 	c.cancel()
-	c.wg.Wait()
+
+	// Stop proxies
+	c.mu.Lock()
+	for _, p := range c.proxies {
+		p.Close()
+	}
+	c.proxies = nil
+	c.mu.Unlock()
+
+	// Stop session
+	if c.session != nil {
+		c.session.Close()
+	}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-
 	c.status.Store(int32(StatusDisconnected))
+	log.Println("🛑 Client stopped")
 }
 
 // StartProxies starts the local proxy servers
@@ -155,7 +189,44 @@ func (c *Client) StartProxies() error {
 		return ErrNilClient
 	}
 
-	// In a real implementation, this would start SOCKS5/HTTP proxies
+	// 1. Initialize Router
+	var rules []*routing.Rule
+	for _, r := range c.cfg.Routing.Rules {
+		rules = append(rules, &routing.Rule{
+			Type:   r.Type,
+			Value:  r.Value,
+			Policy: routing.Policy(r.Policy),
+		})
+	}
+	router := routing.NewRouter(rules, routing.Policy(c.cfg.Routing.DefaultPolicy))
+
+	// 2. Start configured proxies
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, pCfg := range c.cfg.Proxies {
+		bindAddr := fmt.Sprintf("0.0.0.0:%d", pCfg.Port)
+		switch pCfg.Type {
+		case "socks5":
+			srv, err := proxy.NewSOCKS5Server(bindAddr, c.session, router)
+			if err != nil {
+				return fmt.Errorf("failed to start SOCKS5 on %s: %w", bindAddr, err)
+			}
+			go srv.Serve()
+			c.proxies = append(c.proxies, srv)
+			log.Printf("🚀 SOCKS5 proxy listening on %s", bindAddr)
+
+		case "http":
+			srv, err := proxy.NewHTTPProxyServer(bindAddr, c.session, router)
+			if err != nil {
+				return fmt.Errorf("failed to start HTTP proxy on %s: %w", bindAddr, err)
+			}
+			go srv.Serve()
+			c.proxies = append(c.proxies, srv)
+			log.Printf("🚀 HTTP proxy listening on %s", bindAddr)
+		}
+	}
+
 	return nil
 }
 
