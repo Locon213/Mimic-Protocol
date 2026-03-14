@@ -1,28 +1,74 @@
-# Mimic Client Configuration Example
+# ═══════════════════════════════════════════════════════════
+# Mimic Server Configuration Example
+# Документация: https://github.com/Locon213/Mimic-Protocol
+# ═══════════════════════════════════════════════════════════
 
-# Server connection details
-server: "localhost:8080"
+# ───────────────────────────────────────────────────────────
+# 🔑 Основные настройки
+# ───────────────────────────────────────────────────────────
+
+# Порт прослушивания MTP (UDP)
+# Рекомендуется использовать 443 (маскировка под HTTPS) или 8443
+port: 443
+
+# Уникальный идентификатор сервера для аутентификации клиентов
+# Сгенерируйте новый UUID командой: ./server generate-uuid
 uuid: "550e8400-e29b-41d4-a716-446655440000"
 
-# Transport protocol: "mtp" (UDP, default) or "tcp" (legacy)
+# Название сервера (отображается в логах и при генерации ссылок)
+name: "My-Mimic-Server"
+
+# ───────────────────────────────────────────────────────────
+# 🚀 Транспортный протокол
+# ───────────────────────────────────────────────────────────
+
+# Тип транспорта:
+#   "mtp"  — Mimic Transport Protocol поверх UDP (рекомендуется)
+#            • QUIC-маскировка под HTTP/3
+#            • Полиморфные заголовки
+#            • ChaCha20-Poly1305 шифрование
+#            • ARQ + BBR + FEC для стабильности
+#   "tcp"  — устаревший режим (не рекомендуется)
 transport: "mtp"
 
-# Local SOCKS5 proxy port (default: 1080)
-local_port: 1080
+# ───────────────────────────────────────────────────────────
+# 🌐 Список доменов для мимикрии
+# ───────────────────────────────────────────────────────────
 
-# List of domains to mimic
-# Mimic will automatically select the appropriate behavior preset
-domains:
+# Домены, под которые будет маскироваться трафик
+# Сервер выбирает случайный домен из списка при переключении профиля
+domain_list:
   - vk.com          # Social Network behavior
   - rutube.ru       # Video Streaming behavior
   - telegram.org    # Messenger behavior
   - wikipedia.org   # General Web behavior
+  - dzen.ru         # Content Platform behavior
 
-# Behavior settings
-settings:
-  # How often to switch the "digital face" (supports: "60s-300s", "1m-5m", or "60-300")
-  switch_time: "60s-300s"
-  
-  # Randomize the order of domains (true/false)
-  # If true, the sequence will be unique for each session
-  randomize: true
+# ───────────────────────────────────────────────────────────
+# ⚙️ Дополнительные настройки
+# ───────────────────────────────────────────────────────────
+
+# Максимальное количество одновременных клиентов
+# 0 = без ограничений (не рекомендуется)
+max_clients: 100
+
+# DNS-сервер для резолвинга доменов
+# Можно указать свой DNS (например, Cloudflare или Google)
+# Пустое значение = использовать системный DNS
+dns: "1.1.1.1:53"
+
+# ───────────────────────────────────────────────────────────
+# 🔗 Генерация ссылки для клиента
+# ───────────────────────────────────────────────────────────
+#
+# После настройки сервера сгенерируйте ссылку для клиента:
+#   ./server generate-link [config.yaml]
+#
+# Пример ссылки:
+#   mimic://550e8400-e29b-41d4-a716-446655440000@server.com:443
+#   ?name=My-Mimic-Server
+#   &domains=vk.com,rutube.ru,telegram.org
+#   &transport=mtp
+#   &dns=1.1.1.1:53
+#
+# ───────────────────────────────────────────────────────────

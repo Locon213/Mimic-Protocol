@@ -96,8 +96,63 @@ Mimic-Protocol/
 5. **Встроенный Routing Engine** гибко направляет трафик (`direct`, `proxy`, `block`) по правилам.
 6. Каждые 30-600 секунд происходит **бесшовная ротация** транспорта.
 
-### Конфигурация
-Пример `config.yaml` для клиента:
+## 📋 Конфигурация
+
+### Настройка сервера (`config.example.yaml`)
+
+Создайте файл конфигурации на основе примера:
+
+```bash
+cp config.example.yaml server.yaml
+nano server.yaml  # отредактируйте под себя
+```
+
+```yaml
+# Порт прослушивания (рекомендуется 443 для маскировки под HTTPS)
+port: 443
+
+# Уникальный UUID для аутентификации (сгенерируйте: ./server generate-uuid)
+uuid: "550e8400-e29b-41d4-a716-446655440000"
+
+# Название сервера
+name: "My-Mimic-Server"
+
+# Транспорт: "mtp" (UDP, рекомендуется) или "tcp" (устаревший)
+transport: "mtp"
+
+# Домены для мимикрии трафика
+domain_list:
+  - vk.com
+  - rutube.ru
+  - telegram.org
+  - wikipedia.org
+
+# Максимум клиентов (0 = без ограничений)
+max_clients: 100
+
+# DNS-сервер (опционально)
+dns: "1.1.1.1:53"
+```
+
+**Генерация UUID:**
+```bash
+./server generate-uuid
+```
+
+**Генерация ссылки для клиента:**
+```bash
+./server generate-link config.example.yaml
+```
+
+Пример вывода:
+```
+🚀 Share this link with clients to connect:
+================================================================
+mimic://550e8400-e29b-41d4-a716-446655440000@your-server.com:443?name=My-Mimic-Server&domains=vk.com,rutube.ru&transport=mtp&dns=1.1.1.1:53
+================================================================
+```
+
+### Настройка клиента (`config.yaml`)
 
 ```yaml
 server: "your-mimic-server.com:443"
@@ -136,35 +191,97 @@ settings:
 
 ## 🚀 Использование
 
-### Сборка из исходников
+### ⚡ Быстрая установка на Linux (автоматическая)
+
+**Требования:** Ubuntu/Debian, CentOS/RHEL/Fedora, Arch Linux (root-доступ)
 
 ```bash
-# Клонирование
+# 1. Клонирование репозитория
 git clone https://github.com/Locon213/Mimic-Protocol.git
 cd Mimic-Protocol
 
-# Сборка сервера и клиента
+# 2. Запуск установщика (от root)
+sudo bash scripts/linux/install.sh
+
+# 3. Готово! Сервер установлен и запущен
+```
+
+Установщик автоматически:
+- ✅ Скачает готовый бинарник для вашей архитектуры (amd64/arm64)
+- ✅ Установит зависимости (Go, systemd, jq)
+- ✅ Сгенерирует UUID и создаст конфиг в `/etc/mimic/server.yaml`
+- ✅ Настроит systemd-сервис
+- ✅ Включит автозапуск при загрузке
+
+#### Управление сервером через CLI
+
+После установки доступна команда `mimic`:
+
+```bash
+mimic status-server      # Статус сервера
+mimic restart-server     # Перезапуск
+mimic stop-server        # Остановка
+mimic generate-uuid      # Генерация UUID
+mimic generate-link      # Ссылка для клиента
+mimic config_path        # Путь к конфигу
+```
+
+#### Ручная настройка фаервола
+
+```bash
+# UFW (Ubuntu/Debian)
+sudo ufw allow 443/udp
+sudo ufw reload
+
+# firewalld (CentOS/Fedora)
+sudo firewall-cmd --permanent --add-port=443/udp
+sudo firewall-cmd --reload
+```
+
+---
+
+### 🔧 Ручная установка на Linux
+
+Если вы предпочитаете ручную настройку или хотите собрать из исходников:
+
+```bash
+# 1. Установка Go
+sudo apt update && sudo apt install -y golang-go  # Ubuntu/Debian
+# или
+sudo dnf install -y golang  # CentOS/Fedora
+
+# 2. Сборка
+git clone https://github.com/Locon213/Mimic-Protocol.git
+cd Mimic-Protocol
 go build -o server ./cmd/server
-go build -o client ./cmd/client
-```
+chmod +x server
 
-### Использование как Go SDK
-Вы можете встроить клиент Mimic Protocol в собственное Go-приложение (например, GUI или мобильное приложение). Подробнее см. **[Документацию по SDK](docs/sdk.md)**.
+# 3. Настройка
+cp config.example.yaml server.yaml  # или создайте свой конфиг
+./server generate-uuid              # сгенерируйте UUID и вставьте в конфиг
 
-### Генерация UUID
-
-```bash
-./server generate-uuid
-# Выведет: 550e8400-e29b-41d4-a716-446655440000
-```
-
-### Запуск сервера
-
-```bash
+# 4. Запуск
 ./server -config server.yaml
 ```
 
-### Запуск клиента
+---
+
+### 🌐 Кросс-компиляция
+
+```bash
+# Linux AMD64
+GOOS=linux GOARCH=amd64 go build -o server ./cmd/server
+
+# Windows AMD64
+GOOS=windows GOARCH=amd64 go build -o server.exe ./cmd/server
+
+# macOS ARM64
+GOOS=darwin GOARCH=arm64 go build -o server ./cmd/client
+```
+
+---
+
+### 📱 Запуск клиента
 
 ```bash
 ./client -config config.yaml
@@ -176,6 +293,31 @@ go build -o client ./cmd/client
 🌐 SOCKS5 Proxy: 127.0.0.1:1080
   ↑ 125.3 KB/s  ↓ 1.2 MB/s  │  Traffic: 45.6 MB  │  Connected: 00:15:32  │  Active: 3
 ```
+
+---
+
+### 📲 Официальное приложение (Beta)
+
+Для удобного использования доступны готовые приложения с графическим интерфейсом:
+
+**[Mimic App](https://github.com/Locon213/Mimic-App)** — официальное клиентское приложение (в бете)
+
+Доступные платформы:
+- 🐧 **Linux** 
+- 🍎 **macOS** 
+- 🪟 **Windows** 
+- 🤖 **Android** 
+
+Приложение включает:
+- ✅ Графический интерфейс управления
+- ✅ Импорт конфигураций по ссылке (`mimic://...`)
+- ✅ Статистика трафика в реальном времени
+
+---
+
+### 🔌 Использование как Go SDK
+
+Вы можете встроить клиент Mimic Protocol в собственное Go-приложение (например, GUI или мобильное приложение). Подробнее см. **[Документацию по SDK](docs/sdk.md)**.
 
 ## 🔐 Безопасность
 - **Транспорт:** MTP (самописный протокол поверх UDP) с ChaCha20-Poly1305 шифрованием
