@@ -240,12 +240,14 @@ func (s *SOCKS5Server) handleConn(conn net.Conn) {
 
 	// PROXY via Yamux
 	// 5. Open yamux stream to server
+	log.Printf("[SOCKS5] Opening yamux stream for %s", targetAddr)
 	stream, err := s.session.Open()
 	if err != nil {
 		log.Printf("[SOCKS5] Failed to open yamux stream: %v", err)
 		conn.Write([]byte{socks5Version, 0x05, 0x00, socks5AddrIPv4, 0, 0, 0, 0, 0, 0})
 		return
 	}
+	log.Printf("[SOCKS5] Yamux stream opened for %s", targetAddr)
 
 	// Send stream type marker + target address
 	// Protocol: [0x01 stream_type] [1 byte addr_len] [addr string]

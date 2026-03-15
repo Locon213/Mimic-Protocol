@@ -98,39 +98,41 @@ Mimic-Protocol/
 
 ## 📋 Конфигурация
 
-### Настройка сервера (`config.example.yaml`)
+> ⚠️ **Важно:** Библиотека `goccy/go-yaml` не поддерживает комментарии в конфигурационных файлах. При редактировании конфигов удаляйте комментарии (строки начинающиеся с `#`).
+
+### Настройка сервера (`server.yaml`)
 
 Создайте файл конфигурации на основе примера:
 
 ```bash
 cp config.example.yaml server.yaml
-nano server.yaml  # отредактируйте под себя
+nano server.yaml  # отредактируйте под себя (удалите комментарии!)
 ```
 
+#### Все настройки сервера
+
+| Параметр | Тип | Обязательный | Описание | Пример |
+|----------|-----|--------------|----------|--------|
+| `port` | int | ❌ | Порт прослушивания MTP (UDP). По умолчанию: `443` | `443`, `8443`, `8080` |
+| `uuid` | string | ✅ | Уникальный UUID для аутентификации клиентов | `"550e8400-e29b-41d4-a716-446655440000"` |
+| `name` | string | ❌ | Название сервера (отображается в логах и ссылках) | `"My-Mimic-Server"` |
+| `transport` | string | ❌ | Тип транспорта: `"mtp"` (UDP, рекомендуется) или `"tcp"` (устаревший) | `"mtp"` |
+| `domain_list` | []string | ❌ | Список доменов для мимикрии трафика | `["vk.com", "rutube.ru"]` |
+| `max_clients` | int | ❌ | Максимум одновременных клиентов. `0` = без ограничений | `100` |
+| `dns` | string | ❌ | DNS-сервер для резолвинга доменов | `"1.1.1.1:53"` |
+
+#### Пример минимального конфига сервера
+
 ```yaml
-# Порт прослушивания (рекомендуется 443 для маскировки под HTTPS)
 port: 443
-
-# Уникальный UUID для аутентификации (сгенерируйте: ./server generate-uuid)
 uuid: "550e8400-e29b-41d4-a716-446655440000"
-
-# Название сервера
 name: "My-Mimic-Server"
-
-# Транспорт: "mtp" (UDP, рекомендуется) или "tcp" (устаревший)
 transport: "mtp"
-
-# Домены для мимикрии трафика
 domain_list:
   - vk.com
   - rutube.ru
   - telegram.org
-  - wikipedia.org
-
-# Максимум клиентов (0 = без ограничений)
 max_clients: 100
-
-# DNS-сервер (опционально)
 dns: "1.1.1.1:53"
 ```
 
@@ -141,25 +143,110 @@ dns: "1.1.1.1:53"
 
 **Генерация ссылки для клиента:**
 ```bash
-./server generate-link config.example.yaml
+./server generate-link server.yaml
 ```
 
 Пример вывода:
 ```
+================================================================
 🚀 Share this link with clients to connect:
 ================================================================
 mimic://550e8400-e29b-41d4-a716-446655440000@your-server.com:443?name=My-Mimic-Server&domains=vk.com,rutube.ru&transport=mtp&dns=1.1.1.1:53
 ================================================================
 ```
 
-### Настройка клиента (`config.yaml`)
+---
+
+### Настройка клиента (`client.yaml`)
+
+#### Все настройки клиента
+
+| Параметр | Тип | Обязательный | Описание | Пример |
+|----------|-----|--------------|----------|--------|
+| `server` | string | ✅ | Адрес сервера (IP:PORT или домен:PORT) | `"192.168.1.100:443"` |
+| `uuid` | string | ✅ | UUID для аутентификации (должен совпадать с сервером) | `"550e8400-e29b-41d4-a716-446655440000"` |
+| `domains` | []string | ❌ | Список доменов для мимикрии | `["vk.com", "telegram.org"]` |
+| `transport` | string | ❌ | Тип транспорта: `"mtp"` или `"tcp"` | `"mtp"` |
+| `local_port` | int | ❌ | Порт локального SOCKS5 прокси. По умолчанию: `1080` | `1080` |
+| `dns` | string | ❌ | DNS-сервер для резолвинга | `"1.1.1.1:53"` |
+| `proxies` | []object | ❌ | Список локальных прокси (см. ниже) | `[{"type": "socks5", "port": 1080}]` |
+| `routing.default_policy` | string | ❌ | Политика по умолчанию: `proxy`, `direct`, `block` | `"proxy"` |
+| `routing.rules` | []object | ❌ | Правила маршрутизации (см. ниже) | `[...]` |
+| `settings.switch_time` | string | ❌ | Интервал смены профиля (формат: `"60s-300s"` или `"1m-5m"`) | `"60s-300s"` |
+| `settings.randomize` | bool | ❌ | Случайный порядок смены доменов | `true` |
+
+#### Настройка прокси (`proxies`)
+
+Клиент может поднимать несколько локальных прокси одновременно.
+
+| Параметр | Тип | Описание |
+|----------|-----|----------|
+| `type` | string | Тип прокси: `"socks5"` (с поддержкой UDP) или `"http"` |
+| `port` | int | Порт для прослушивания |
+
+**Пример настройки прокси:**
+
+```yaml
+proxies:
+  - type: "socks5"
+    port: 1080
+  - type: "http"
+    port: 8080
+```
+
+#### Настройка маршрутизации (`routing`)
+
+Встроенный Routing Engine направляет трафик на основе правил.
+
+**Политики:**
+- `proxy` — направлять через туннель Mimic
+- `direct` — подключаться напрямую (в обход туннеля)
+- `block` — блокировать соединение
+
+**Типы правил:**
+- `domain_suffix` — совпадение по суффиксу домена (например, `ru`, `org`)
+- `domain_keyword` — совпадение по ключевому слову в домене
+- `ip_cidr` — совпадение по IP-диапазону (CIDR-нотация)
+
+**Пример настройки маршрутизации:**
+
+```yaml
+routing:
+  default_policy: proxy
+  rules:
+    - type: domain_suffix
+      value: ru
+      policy: direct
+    - type: domain_suffix
+      value: cn
+      policy: block
+    - type: ip_cidr
+      value: 192.168.0.0/16
+      policy: direct
+    - type: domain_keyword
+      value: google
+      policy: proxy
+```
+
+#### Пример полного конфига клиента
 
 ```yaml
 server: "your-mimic-server.com:443"
-uuid: "your-uuid-here"
-local_port: 1080  # Порт SOCKS5 прокси с поддержкой TCP/UDP
+uuid: "550e8400-e29b-41d4-a716-446655440000"
+local_port: 1080
+domains:
+  - vk.com
+  - rutube.ru
+  - telegram.org
+transport: "mtp"
+dns: "1.1.1.1:53"
 
-# Движок маршрутизации (Опционально)
+proxies:
+  - type: "socks5"
+    port: 1080
+  - type: "http"
+    port: 8080
+
 routing:
   default_policy: proxy
   rules:
@@ -170,24 +257,23 @@ routing:
       value: 127.0.0.0/8
       policy: block
 
-domains:
-  - vk.com          # Пресет "social"
-  - rutube.ru       # Пресет "video"
-  - telegram.org    # Пресет "messenger"
-
 settings:
-  switch_time: "60s-300s"   # Менять профиль каждые 1-5 минут
-  randomize: true           # Случайный порядок смены доменов
+  switch_time: "60s-300s"
+  randomize: true
 ```
 
+
 ## 📦 Используемые библиотеки (Go)
-В проекте используются следующие мощные Open-Source решения:
-- **[hashicorp/yamux](https://github.com/hashicorp/yamux)** — мультиплексирование потоков поверх MTP.
-- **[klauspost/reedsolomon](https://github.com/klauspost/reedsolomon)** — сверхбыстрая реализация FEC для восстановления потерь.
-- **[refraction-networking/utls](https://github.com/refraction-networking/utls)** — подмена TLS Fingerprint (имитация реальных браузеров).
-- **[golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto/chacha20poly1305)** — надежное шифрование ChaCha20-Poly1305.
-- **[google/uuid](https://github.com/google/uuid)** — генерация и парсинг UUID для авторизации.
-- **[go-yaml/yaml](https://github.com/go-yaml/yaml)** — парсинг конфигурационных файлов.
+
+| Библиотека | Назначение |
+|------------|------------|
+| **[github.com/goccy/go-yaml](https://github.com/goccy/go-yaml)** | Быстрый YAML-парсер (в 10 раз быстрее стандартного) |
+| **[github.com/hashicorp/yamux](https://github.com/hashicorp/yamux)** | Мультиплексирование потоков поверх MTP |
+| **[github.com/klauspost/reedsolomon](https://github.com/klauspost/reedsolomon)** | Сверхбыстрая реализация FEC для восстановления потерь |
+| **[github.com/refraction-networking/utls](https://github.com/refraction-networking/utls)** | Подмена TLS Fingerprint (имитация реальных браузеров) |
+| **[golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto/chacha20poly1305)** | Надежное шифрование ChaCha20-Poly1305 |
+| **[github.com/google/uuid](https://github.com/google/uuid)** | Генерация и парсинг UUID для авторизации |
+| **[github.com/klauspost/compress](https://github.com/klauspost/compress)** | Высокопроизводительное сжатие данных |
 
 ## 🚀 Использование
 

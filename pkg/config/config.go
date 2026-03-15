@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
+	"github.com/goccy/go-yaml"
 )
 
 // ClientConfig represents the client configuration
@@ -68,10 +68,22 @@ type clientYAMLConfig struct {
 	LocalPort int      `yaml:"local_port"`
 	DNS       string   `yaml:"dns"`
 	Domains   []string `yaml:"domains"`
-	Settings  struct {
+	Proxies   []struct {
+		Type string `yaml:"type"`
+		Port int    `yaml:"port"`
+	} `yaml:"proxies"`
+	Settings struct {
 		SwitchTime string `yaml:"switch_time"`
 		Randomize  bool   `yaml:"randomize"`
 	} `yaml:"settings"`
+	Routing struct {
+		DefaultPolicy string `yaml:"default_policy"`
+		Rules         []struct {
+			Type   string `yaml:"type"`
+			Value  string `yaml:"value"`
+			Policy string `yaml:"policy"`
+		} `yaml:"rules"`
+	} `yaml:"routing"`
 }
 
 // serverYAMLConfig represents the raw YAML server config structure
@@ -114,6 +126,32 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 		Routing: RoutingConfig{
 			DefaultPolicy: "proxy",
 		},
+	}
+
+	// Load proxies из конфига (если указаны)
+	if len(yamlCfg.Proxies) > 0 {
+		cfg.Proxies = make([]ProxyConfig, len(yamlCfg.Proxies))
+		for i, p := range yamlCfg.Proxies {
+			cfg.Proxies[i] = ProxyConfig{
+				Type: p.Type,
+				Port: p.Port,
+			}
+		}
+	}
+
+	// Load routing из конфига (если указан)
+	if yamlCfg.Routing.DefaultPolicy != "" {
+		cfg.Routing.DefaultPolicy = yamlCfg.Routing.DefaultPolicy
+	}
+	if len(yamlCfg.Routing.Rules) > 0 {
+		cfg.Routing.Rules = make([]RoutingRule, len(yamlCfg.Routing.Rules))
+		for i, rule := range yamlCfg.Routing.Rules {
+			cfg.Routing.Rules[i] = RoutingRule{
+				Type:   rule.Type,
+				Value:  rule.Value,
+				Policy: rule.Policy,
+			}
+		}
 	}
 
 	// Set default values

@@ -205,13 +205,15 @@ func (s *Server) handleMTPConnection(conn net.Conn, cfg *config.ServerConfig) {
 
 	// Handle streams from this Yamux session
 	go func() {
+		log.Printf("[Yamux] Starting Accept loop for session %s", sessionID)
 		for {
 			stream, err := yamuxSession.Accept()
 			if err != nil {
-				log.Printf("Session %s closed: %v", sessionID, err)
+				log.Printf("[Yamux] Session %s Accept error: %v", sessionID, err)
 				s.removeSession(sessionID)
 				return
 			}
+			log.Printf("[Yamux] Accepted new stream for session %s", sessionID)
 			go s.handleStream(stream)
 		}
 	}()
