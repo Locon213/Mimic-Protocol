@@ -1,11 +1,13 @@
 package protocol
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net"
 	"time"
 
+	"github.com/Locon213/Mimic-Protocol/pkg/network"
 	utls "github.com/refraction-networking/utls"
 )
 
@@ -23,9 +25,13 @@ func NewConnection(conn net.Conn, secret string) *Connection {
 	}
 }
 
-// Dial connects to the remote address
+// Dial connects to the remote address using protected dialer.
+// Uses Android VpnService protection when available.
 func Dial(address string, secret string) (*Connection, error) {
-	conn, err := net.DialTimeout("tcp", address, 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	conn, err := network.DialProtectedContext(ctx, "tcp", address)
 	if err != nil {
 		return nil, err
 	}

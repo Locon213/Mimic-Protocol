@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/Locon213/Mimic-Protocol/pkg/network"
 )
 
 // MTPConn implements net.Conn over a reliable UDP transport using the MTP protocol.
@@ -396,13 +398,15 @@ type UDPResolver interface {
 }
 
 // Dial creates a client-side MTPConn to the given server address
+// Uses protected dialer when running under Android VpnService.
 func Dial(resolver UDPResolver, address string, secret string) (*MTPConn, error) {
 	raddr, err := resolver.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, fmt.Errorf("mtp: resolve address: %w", err)
 	}
 
-	udpConn, err := net.DialUDP("udp", nil, raddr)
+	// Use protected dialer for Android VpnService compatibility
+	udpConn, err := network.DialUDPProtected("udp", nil, raddr)
 	if err != nil {
 		return nil, fmt.Errorf("mtp: dial udp: %w", err)
 	}
@@ -425,13 +429,15 @@ func Dial(resolver UDPResolver, address string, secret string) (*MTPConn, error)
 }
 
 // DialMigrate creates a new MTPConn for session migration (seamless rotation)
+// Uses protected dialer when running under Android VpnService.
 func DialMigrate(resolver UDPResolver, address string, secret string, sessionID string) (*MTPConn, error) {
 	raddr, err := resolver.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, fmt.Errorf("mtp: resolve address: %w", err)
 	}
 
-	udpConn, err := net.DialUDP("udp", nil, raddr)
+	// Use protected dialer for Android VpnService compatibility
+	udpConn, err := network.DialUDPProtected("udp", nil, raddr)
 	if err != nil {
 		return nil, fmt.Errorf("mtp: dial udp: %w", err)
 	}

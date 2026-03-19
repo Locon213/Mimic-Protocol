@@ -47,7 +47,12 @@ func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 		return m.session, nil
 	}
 
-	// 1. Dial MTP (UDP)
+	// Log if protected sockets are enabled
+	if network.IsProtectorSet() {
+		log.Printf("[Transport] Using protected sockets (Android VpnService mode)")
+	}
+
+	// 1. Dial MTP (UDP) - uses protected dialer internally
 	conn, err := mtp.Dial(m.resolver, m.serverAddr, m.uuid)
 	if err != nil {
 		return nil, fmt.Errorf("mtp dial failed: %w", err)
@@ -72,11 +77,13 @@ func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 	}
 
 	m.session = session
+	log.Printf("[Transport] Session established via MTP")
 	return session, nil
 }
 
 // RotateTransport switches the underlying transport to a new domain
 // while keeping the Yamux session alive via MTP session migration.
+// Uses protected dialer for Android VpnService compatibility.
 func (m *Manager) RotateTransport(newDomain string) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
@@ -87,7 +94,7 @@ func (m *Manager) RotateTransport(newDomain string) error {
 
 	log.Printf("[Transport] Rotating transport (MTP migration)...")
 
-	// 1. Create NEW MTPConn via session migration
+	// 1. Create NEW MTPConn via session migration (uses protected dialer)
 	newConn, err := mtp.DialMigrate(m.resolver, m.serverAddr, m.uuid, m.uuid)
 	if err != nil {
 		return fmt.Errorf("failed to migrate MTP session: %w", err)

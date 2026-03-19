@@ -20,6 +20,19 @@ type ClientConfig struct {
 	Routing    RoutingConfig  // Routing rules
 	ServerName string         // Server name from URL
 	LocalPort  int            // Local proxy port (for backward compatibility)
+	Android    AndroidConfig  // Android-specific configuration
+}
+
+// AndroidConfig represents Android-specific configuration
+type AndroidConfig struct {
+	// EnableTUN enables Android TUN backend (requires VpnService)
+	EnableTUN bool
+	// TUNFD is the TUN file descriptor from VpnService (optional, set at runtime)
+	TUNFD int
+	// MTU for TUN interface (default: 1500)
+	MTU int
+	// UseProtectedSockets enables socket protection via VpnService.protect()
+	UseProtectedSockets bool
 }
 
 // ServerConfig represents the server configuration
@@ -84,6 +97,11 @@ type clientYAMLConfig struct {
 			Policy string `yaml:"policy"`
 		} `yaml:"rules"`
 	} `yaml:"routing"`
+	Android struct {
+		EnableTUN           bool `yaml:"enable_tun"`
+		UseProtectedSockets bool `yaml:"use_protected_sockets"`
+		MTU                 int  `yaml:"mtu"`
+	} `yaml:"android"`
 }
 
 // serverYAMLConfig represents the raw YAML server config structure
@@ -168,6 +186,18 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 	// Parse switch time
 	if cfg.Settings.SwitchTimeRangeStr != "" {
 		cfg.Settings.SwitchMin, cfg.Settings.SwitchMax = parseSwitchTime(cfg.Settings.SwitchTimeRangeStr)
+	}
+
+	// Load Android config
+	cfg.Android = AndroidConfig{
+		EnableTUN:           yamlCfg.Android.EnableTUN,
+		UseProtectedSockets: yamlCfg.Android.UseProtectedSockets,
+		MTU:                 yamlCfg.Android.MTU,
+	}
+
+	// Set default MTU
+	if cfg.Android.MTU <= 0 {
+		cfg.Android.MTU = 1500
 	}
 
 	return cfg, nil

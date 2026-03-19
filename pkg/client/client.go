@@ -13,6 +13,7 @@ import (
 	"github.com/Locon213/Mimic-Protocol/pkg/network"
 	"github.com/Locon213/Mimic-Protocol/pkg/proxy"
 	"github.com/Locon213/Mimic-Protocol/pkg/routing"
+	"github.com/Locon213/Mimic-Protocol/pkg/tunnel"
 	"github.com/Locon213/Mimic-Protocol/pkg/version"
 	"github.com/hashicorp/yamux"
 )
@@ -90,6 +91,7 @@ type Client struct {
 	// MTP & Tunnel
 	session *yamux.Session
 	proxies []interface{ Close() error }
+	tun     *tunnel.Tunnel // Android TUN tunnel instance
 }
 
 // NewClient creates a new Mimic client instance
@@ -105,9 +107,15 @@ func NewClient(cfg *config.ClientConfig) (*Client, error) {
 		status: atomic.Int32{},
 		ctx:    ctx,
 		cancel: cancel,
+		tun:    tunnel.New(), // Initialize TUN tunnel instance
 	}
 
 	c.status.Store(int32(StatusDisconnected))
+
+	// Initialize protected sockets if enabled for Android
+	if cfg.Android.UseProtectedSockets {
+		log.Printf("[Client] Protected sockets enabled for Android VpnService")
+	}
 
 	return c, nil
 }
@@ -126,6 +134,16 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	c.status.Store(int32(StatusConnecting))
+
+	// Start TUN tunnel if enabled for Android
+	if c.cfg.Android.EnableTUN && c.cfg.Android.TUNFD > 0 {
+		log.Printf("[Client] Starting Android TUN tunnel (fd=%d, mtu=%d)", c.cfg.Android.TUNFD, c.cfg.Android.MTU)
+		if err := c.tun.StartTunnelFromFD(c.cfg.Android.TUNFD, c.cfg.Android.MTU); err != nil {
+			c.status.Store(int32(StatusDisconnected))
+			return fmt.Errorf("tunnel start failed: %w", err)
+		}
+		log.Printf("[Client] TUN tunnel started successfully")
+	}
 
 	// 1. Initialize Resolver
 	resolver := network.NewCachedResolver(c.cfg.DNS, 10*time.Minute)
@@ -163,6 +181,13 @@ func (c *Client) Stop() {
 	}
 
 	c.cancel()
+
+	// Stop TUN tunnel
+	if c.tun != nil {
+		if err := c.tun.StopTunnel(); err != nil {
+			log.Printf("[Client] Warning: tunnel stop error: %v", err)
+		}
+	}
 
 	// Stop proxies
 	c.mu.Lock()
@@ -393,6 +418,75 @@ func (c *Client) collectStats() {
 			}
 		}
 	}
+}
+
+// ============================================
+// Android VpnService Integration
+// ============================================
+
+// SetSocketProtector sets the socket protector callback for Android VpnService.
+// This must be called before Start() if using protected sockets.
+// The protector function will be called with each socket fd before dialing.
+func (c *Client) SetSocketProtector(protector func(fd int) bool) {
+	if protector != nil {
+		log.Printf("[Client] Setting up socket protector for Android VpnService")
+		network.SetSocketProtector(protector)
+	}
+}
+
+// StartTunnelFromFD starts the Android TUN tunnel with the given file descriptor.
+// This is an alternative to enabling TUN in config - can be called at runtime.
+// fd: TUN file descriptor from VpnService
+// mtu: MTU for TUN interface (0 for default 1500)
+func (c *Client) StartTunnelFromFD(fd int, mtu int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.tun == nil {
+		c.tun = tunnel.New()
+	}
+
+	log.Printf("[Client] Starting TUN tunnel from fd=%d, mtu=%d", fd, mtu)
+	if err := c.tun.StartTunnelFromFD(fd, mtu); err != nil {
+		return fmt.Errorf("tunnel start failed: %w", err)
+	}
+
+	log.Printf("[Client] TUN tunnel started successfully")
+	return nil
+}
+
+// StopTunnel stops the Android TUN tunnel.
+func (c *Client) StopTunnel() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.tun == nil {
+		return nil
+	}
+
+	log.Printf("[Client] Stopping TUN tunnel")
+	return c.tun.StopTunnel()
+}
+
+// IsTunnelRunning returns true if the TUN tunnel is currently running.
+func (c *Client) IsTunnelRunning() bool {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.tun != nil && c.tun.IsTunnelRunning()
+}
+
+// GetTunnelInfo returns information about the TUN tunnel.
+func (c *Client) GetTunnelInfo() map[string]interface{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	if c.tun == nil {
+		return map[string]interface{}{"enabled": false}
+	}
+
+	info := c.tun.GetTunnelInfo()
+	info["enabled"] = true
+	return info
 }
 
 // Errors

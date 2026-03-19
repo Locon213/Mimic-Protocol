@@ -35,11 +35,8 @@ func NewCachedResolver(nameserver string, ttl time.Duration) *CachedResolver {
 		r.resolver = &net.Resolver{
 			PreferGo: true,
 			Dial: func(ctx context.Context, network, address string) (net.Conn, error) {
-				d := net.Dialer{
-					Timeout: 5 * time.Second,
-				}
-				// Force the connection to the custom nameserver
-				return d.DialContext(ctx, "udp", nameserver)
+				// Use protected dialer for DNS connections under Android VpnService
+				return DialProtectedContext(ctx, "udp", nameserver)
 			},
 		}
 	} else {
@@ -133,6 +130,7 @@ func (r *CachedResolver) ResolveUDPAddr(network, address string) (*net.UDPAddr, 
 
 // DialContext acts like net.DialContext but uses the cache for DNS resolution.
 // It resolves the hostname and dials the first available IP.
+// Uses protected dialer when running under Android VpnService.
 func (r *CachedResolver) DialContext(ctx context.Context, network, address string) (net.Conn, error) {
 	host, portStr, err := net.SplitHostPort(address)
 	if err != nil {
@@ -140,9 +138,8 @@ func (r *CachedResolver) DialContext(ctx context.Context, network, address strin
 	}
 
 	if net.ParseIP(host) != nil {
-		// It's already an IP, dial directly
-		var d net.Dialer
-		return d.DialContext(ctx, network, address)
+		// It's already an IP, dial directly using protected dialer
+		return DialProtectedContext(ctx, network, address)
 	}
 
 	ips, err := r.ResolveIPAddr(ctx, host)
@@ -150,13 +147,12 @@ func (r *CachedResolver) DialContext(ctx context.Context, network, address strin
 		return nil, fmt.Errorf("dns resolve error: %w", err)
 	}
 
-	var d net.Dialer
 	var lastErr error
 
-	// Try IPs until one succeeds
+	// Try IPs until one succeeds (using protected dialer)
 	for _, ip := range ips {
 		targetAddr := net.JoinHostPort(ip.IP.String(), portStr)
-		conn, err := d.DialContext(ctx, network, targetAddr)
+		conn, err := DialProtectedContext(ctx, network, targetAddr)
 		if err == nil {
 			return conn, nil
 		}
