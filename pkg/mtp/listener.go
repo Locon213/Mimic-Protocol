@@ -11,9 +11,10 @@ import (
 // Listener is an MTP server-side listener that accepts MTP connections over UDP.
 // It implements a net.Listener-compatible interface.
 type Listener struct {
-	udpConn *net.UDPConn
-	secret  string
-	codec   *PacketCodec
+	udpConn     *net.UDPConn
+	secret      string
+	codec       *PacketCodec
+	compression *CompressionConfig
 
 	// Connection tracking: remoteAddr -> MTPConn
 	connections map[string]*MTPConn
@@ -34,6 +35,11 @@ type Listener struct {
 
 // Listen creates a new MTP listener on the given address
 func Listen(address string, secret string) (*Listener, error) {
+	return ListenWithConfig(address, secret, nil)
+}
+
+// ListenWithConfig creates a new MTP listener with custom configuration
+func ListenWithConfig(address string, secret string, compression *CompressionConfig) (*Listener, error) {
 	laddr, err := net.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, fmt.Errorf("mtp: resolve address: %w", err)
@@ -49,9 +55,15 @@ func Listen(address string, secret string) (*Listener, error) {
 	_ = udpConn.SetWriteBuffer(8 * 1024 * 1024)
 
 	l := &Listener{
-		udpConn:     udpConn,
-		secret:      secret,
-		codec:       NewPacketCodec(secret),
+		udpConn: udpConn,
+		secret:  secret,
+		codec: NewPacketCodecWithConfig(CodecConfig{
+			Secret:          secret,
+			EnableDCIDRot:   true,
+			DCIDRotInterval: 300,
+			Compression:     compression,
+		}),
+		compression: compression,
 		connections: make(map[string]*MTPConn),
 		sessions:    make(map[string]*MTPConn),
 		acceptCh:    make(chan *MTPConn, 64),
@@ -188,8 +200,8 @@ func (l *Listener) handleSYN(remoteAddr *net.UDPAddr, pkt *Packet) {
 
 	sessionID := payload[5:]
 
-	// Create new MTPConn for this client
-	conn := newMTPConn(l.udpConn, remoteAddr, l.secret, true)
+	// Create new MTPConn for this client with compression config
+	conn := newMTPConn(l.udpConn, remoteAddr, l.secret, true, l.compression)
 	conn.sessionID = sessionID
 
 	addrKey := remoteAddr.String()

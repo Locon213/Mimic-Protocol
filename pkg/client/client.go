@@ -148,8 +148,18 @@ func (c *Client) Start(ctx context.Context) error {
 	// 1. Initialize Resolver
 	resolver := network.NewCachedResolver(c.cfg.DNS, 10*time.Minute)
 
-	// 2. Connect via MTP
-	mtpConn, err := mtp.Dial(resolver, c.cfg.Server, c.cfg.UUID)
+	// 2. Connect via MTP with compression config
+	var compression *mtp.CompressionConfig
+	if c.cfg.Compression.Enable {
+		compression = &mtp.CompressionConfig{
+			Enable:  c.cfg.Compression.Enable,
+			Level:   c.cfg.Compression.Level,
+			MinSize: c.cfg.Compression.MinSize,
+		}
+		log.Printf("[Client] Compression enabled (level=%d, min_size=%d)", c.cfg.Compression.Level, c.cfg.Compression.MinSize)
+	}
+
+	mtpConn, err := mtp.DialWithConfig(resolver, c.cfg.Server, c.cfg.UUID, compression)
 	if err != nil {
 		c.status.Store(int32(StatusDisconnected))
 		return fmt.Errorf("mtp dial failed: %w", err)

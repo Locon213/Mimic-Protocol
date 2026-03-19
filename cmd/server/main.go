@@ -121,8 +121,18 @@ func main() {
 
 	addr := fmt.Sprintf(":%d", cfg.Port)
 
-	// 2. Start MTP Listener (UDP)
-	mtpListener, err := mtp.Listen(addr, cfg.UUID)
+	// 2. Start MTP Listener (UDP) with compression config
+	var compression *mtp.CompressionConfig
+	if cfg.Compression.Enable {
+		compression = &mtp.CompressionConfig{
+			Enable:  cfg.Compression.Enable,
+			Level:   cfg.Compression.Level,
+			MinSize: cfg.Compression.MinSize,
+		}
+		log.Printf("🗜️  Compression enabled (level=%d, min_size=%d)", cfg.Compression.Level, cfg.Compression.MinSize)
+	}
+
+	mtpListener, err := mtp.ListenWithConfig(addr, cfg.UUID, compression)
 	if err != nil {
 		log.Fatalf("Failed to start MTP listener on port %d: %v", cfg.Port, err)
 	}

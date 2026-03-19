@@ -51,8 +51,13 @@ type MTPConn struct {
 
 // newMTPConn creates a new MTPConn (used internally by Dial and Listener).
 // IMPORTANT: goroutines are NOT started here. Call startWorkers() after handshake.
-func newMTPConn(udpConn *net.UDPConn, remoteAddr *net.UDPAddr, secret string, isServer bool) *MTPConn {
-	codec := NewPacketCodec(secret)
+func newMTPConn(udpConn *net.UDPConn, remoteAddr *net.UDPAddr, secret string, isServer bool, compression *CompressionConfig) *MTPConn {
+	codec := NewPacketCodecWithConfig(CodecConfig{
+		Secret:          secret,
+		EnableDCIDRot:   true,
+		DCIDRotInterval: 300,
+		Compression:     compression,
+	})
 
 	c := &MTPConn{
 		udpConn:    udpConn,
@@ -400,6 +405,12 @@ type UDPResolver interface {
 // Dial creates a client-side MTPConn to the given server address
 // Uses protected dialer when running under Android VpnService.
 func Dial(resolver UDPResolver, address string, secret string) (*MTPConn, error) {
+	return DialWithConfig(resolver, address, secret, nil)
+}
+
+// DialWithConfig creates a client-side MTPConn with custom configuration
+// Uses protected dialer when running under Android VpnService.
+func DialWithConfig(resolver UDPResolver, address string, secret string, compression *CompressionConfig) (*MTPConn, error) {
 	raddr, err := resolver.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, fmt.Errorf("mtp: resolve address: %w", err)
@@ -414,7 +425,7 @@ func Dial(resolver UDPResolver, address string, secret string) (*MTPConn, error)
 	_ = udpConn.SetReadBuffer(4 * 1024 * 1024)
 	_ = udpConn.SetWriteBuffer(4 * 1024 * 1024)
 
-	conn := newMTPConn(udpConn, raddr, secret, false)
+	conn := newMTPConn(udpConn, raddr, secret, false, compression)
 
 	// Perform handshake FIRST (before starting recv goroutines)
 	if err := conn.handshakeClient(secret); err != nil {
@@ -431,6 +442,12 @@ func Dial(resolver UDPResolver, address string, secret string) (*MTPConn, error)
 // DialMigrate creates a new MTPConn for session migration (seamless rotation)
 // Uses protected dialer when running under Android VpnService.
 func DialMigrate(resolver UDPResolver, address string, secret string, sessionID string) (*MTPConn, error) {
+	return DialMigrateWithConfig(resolver, address, secret, sessionID, nil)
+}
+
+// DialMigrateWithConfig creates a new MTPConn for session migration with custom configuration
+// Uses protected dialer when running under Android VpnService.
+func DialMigrateWithConfig(resolver UDPResolver, address string, secret string, sessionID string, compression *CompressionConfig) (*MTPConn, error) {
 	raddr, err := resolver.ResolveUDPAddr("udp", address)
 	if err != nil {
 		return nil, fmt.Errorf("mtp: resolve address: %w", err)
@@ -445,7 +462,7 @@ func DialMigrate(resolver UDPResolver, address string, secret string, sessionID 
 	_ = udpConn.SetReadBuffer(4 * 1024 * 1024)
 	_ = udpConn.SetWriteBuffer(4 * 1024 * 1024)
 
-	conn := newMTPConn(udpConn, raddr, secret, false)
+	conn := newMTPConn(udpConn, raddr, secret, false, compression)
 	conn.sessionID = sessionID
 
 	// Perform migration handshake FIRST

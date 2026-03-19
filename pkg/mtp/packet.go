@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Locon213/Mimic-Protocol/pkg/compression"
 	"golang.org/x/crypto/chacha20poly1305"
 )
 
@@ -29,10 +30,11 @@ const (
 
 // Packet flags
 const (
-	FlagNone     uint8 = 0x00
-	FlagMigrate  uint8 = 0x01 // Session migration
-	FlagSACK     uint8 = 0x02 // Selective ACK
-	FlagFragment uint8 = 0x04 // Fragmented payload
+	FlagNone       uint8 = 0x00
+	FlagMigrate    uint8 = 0x01 // Session migration
+	FlagSACK       uint8 = 0x02 // Selective ACK
+	FlagFragment   uint8 = 0x04 // Fragmented payload
+	FlagCompressed uint8 = 0x08 // Payload is compressed (applied BEFORE encryption)
 )
 
 // MaxPayloadSize is the max payload per MTP packet (safe UDP MTU)
@@ -66,18 +68,31 @@ var (
 )
 
 // PacketCodec handles polymorphic encoding and decoding of MTP packets
+// with optional compression (compression is applied BEFORE encryption)
 type PacketCodec struct {
 	sharedKey    []byte // 32-byte key derived from UUID
 	dcid         []byte // 8-byte Connection ID for QUIC masking
 	dcidRevision atomic.Uint64
 	dcidMu       sync.RWMutex
+
+	// Compression (optional, applied before encryption)
+	compressor  interface{} // *compression.Compressor or nil
+	compressCfg *CompressionConfig
+}
+
+// CompressionConfig holds compression configuration
+type CompressionConfig struct {
+	Enable  bool
+	Level   int
+	MinSize int
 }
 
 // CodecConfig holds configuration for PacketCodec
 type CodecConfig struct {
 	Secret          string
-	EnableDCIDRot   bool // Enable DCID rotation for security
-	DCIDRotInterval int  // DCID rotation interval in seconds
+	EnableDCIDRot   bool               // Enable DCID rotation for security
+	DCIDRotInterval int                // DCID rotation interval in seconds
+	Compression     *CompressionConfig // Optional compression config
 }
 
 // NewPacketCodec creates a new codec with the given shared secret
@@ -86,6 +101,7 @@ func NewPacketCodec(secret string) *PacketCodec {
 		Secret:          secret,
 		EnableDCIDRot:   true,
 		DCIDRotInterval: 300, // 5 minutes
+		Compression:     nil, // No compression by default
 	})
 }
 
@@ -98,8 +114,15 @@ func NewPacketCodecWithConfig(cfg CodecConfig) *PacketCodec {
 	dcid := mac.Sum(nil)[:8]
 
 	codec := &PacketCodec{
-		sharedKey: key,
-		dcid:      dcid,
+		sharedKey:   key,
+		dcid:        dcid,
+		compressCfg: cfg.Compression,
+	}
+
+	// Initialize compressor if compression is enabled
+	if cfg.Compression != nil && cfg.Compression.Enable {
+		// Lazy initialization will be done in compress/decompress methods
+		// to avoid import cycle
 	}
 
 	// Start DCID rotation goroutine if enabled
@@ -161,22 +184,156 @@ func (c *PacketCodec) getAEAD() (interface{}, error) {
 	return chacha20poly1305.NewX(c.sharedKey)
 }
 
+// getCompressor lazily initializes the compressor
+func (c *PacketCodec) getCompressor() (interface{}, error) {
+	if c.compressor != nil {
+		return c.compressor, nil
+	}
+
+	if c.compressCfg == nil || !c.compressCfg.Enable {
+		return nil, nil
+	}
+
+	// Import compression package lazily to avoid circular dependency
+	// We use reflection-like approach by calling package functions directly
+	// This is a workaround - in production you'd import at top level
+	level := c.compressCfg.Level
+	if level < 1 || level > 3 {
+		level = 2
+	}
+
+	// Create compressor using the compression package
+	// Note: We need to import compression package at the top
+	// For now, return nil and handle in Encode/Decode
+	return nil, nil
+}
+
+// compressPayload compresses payload if compression is enabled
+// Returns compressed data or original if compression is disabled/ineffective
+func (c *PacketCodec) compressPayload(data []byte) ([]byte, error) {
+	if c.compressCfg == nil || !c.compressCfg.Enable {
+		return data, nil
+	}
+
+	// Don't compress small data
+	if len(data) < c.compressCfg.MinSize {
+		return data, nil
+	}
+
+	// Lazy initialize compressor
+	if c.compressor == nil {
+		comp, err := c.initCompressor()
+		if err != nil {
+			return data, err
+		}
+		if comp == nil {
+			return data, nil
+		}
+		c.compressor = comp
+	}
+
+	// Type assert to compression.Compressor
+	comp, ok := c.compressor.(*compression.Compressor)
+	if !ok {
+		return data, nil
+	}
+
+	compressed, err := comp.CompressWithHeader(data)
+	if err != nil {
+		return data, err
+	}
+
+	// Only return compressed if it's actually smaller
+	// (CompressWithHeader adds 5-byte header, so might not be worth it for small data)
+	if len(compressed) >= len(data) {
+		return data, nil
+	}
+
+	return compressed, nil
+}
+
+// decompressPayload decompresses payload if it was compressed
+func (c *PacketCodec) decompressPayload(data []byte) ([]byte, error) {
+	if c.compressCfg == nil || !c.compressCfg.Enable {
+		return data, nil
+	}
+
+	// Lazy initialize compressor
+	if c.compressor == nil {
+		comp, err := c.initCompressor()
+		if err != nil {
+			return data, err
+		}
+		if comp == nil {
+			return data, nil
+		}
+		c.compressor = comp
+	}
+
+	// Type assert to compression.Compressor
+	comp, ok := c.compressor.(*compression.Compressor)
+	if !ok {
+		return data, nil
+	}
+
+	return comp.DecompressWithHeader(data)
+}
+
+// initCompressor initializes the zstd compressor
+func (c *PacketCodec) initCompressor() (*compression.Compressor, error) {
+	if c.compressCfg == nil {
+		return nil, nil
+	}
+
+	level := c.compressCfg.Level
+	if level < 1 || level > 3 {
+		level = 2
+	}
+
+	return compression.NewCompressor(compression.CompressorConfig{
+		Level:   level,
+		MinSize: c.compressCfg.MinSize,
+	})
+}
+
 // Encode serializes and encrypts a Packet into wire format:
+// Pipeline: Payload -> Compress (optional) -> Encrypt -> Add QUIC header
 // [ QUIC Short Header: 9 bytes ] [ padLen: 2 ] [ padding: N ] [ nonce: 24 ] [ ciphertext: M ]
 func (c *PacketCodec) Encode(pkt *Packet) ([]byte, error) {
+	// 1. Compress payload FIRST (before encryption) - compression is transparent
+	var payloadBytes []byte
+	var err error
+	wasCompressed := false
+
+	if c.compressCfg != nil && c.compressCfg.Enable && len(pkt.Payload) > 0 {
+		payloadBytes, err = c.compressPayload(pkt.Payload)
+		if err != nil {
+			return nil, fmt.Errorf("mtp: compression failed: %w", err)
+		}
+		// Only set FlagCompressed if data was actually compressed (size reduced)
+		if len(payloadBytes) < len(pkt.Payload) {
+			pkt.Flags |= FlagCompressed
+			wasCompressed = true
+		}
+	} else {
+		payloadBytes = pkt.Payload
+	}
+
+	_ = wasCompressed // for debugging
+
 	// Get buffer from pool for plaintext (before encryption)
 	plaintextBuf := encodeBufferPool.Get().([]byte)
 	defer encodeBufferPool.Put(plaintextBuf)
 
-	// 1. Build plaintext header at the START of buffer
+	// 2. Build plaintext header at the START of buffer
 	plaintextBuf[0] = pkt.Type
 	binary.BigEndian.PutUint32(plaintextBuf[1:5], pkt.SeqNum)
 	binary.BigEndian.PutUint32(plaintextBuf[5:9], pkt.AckNum)
-	binary.BigEndian.PutUint16(plaintextBuf[9:11], uint16(len(pkt.Payload)))
+	binary.BigEndian.PutUint16(plaintextBuf[9:11], uint16(len(payloadBytes)))
 	plaintextBuf[11] = pkt.Flags
 
-	plaintextLen := headerSize + len(pkt.Payload)
-	copy(plaintextBuf[headerSize:headerSize+len(pkt.Payload)], pkt.Payload)
+	plaintextLen := headerSize + len(payloadBytes)
+	copy(plaintextBuf[headerSize:headerSize+len(payloadBytes)], payloadBytes)
 
 	// Add SACK blocks if present
 	if pkt.Flags&FlagSACK != 0 && len(pkt.SACKBlocks) > 0 {
@@ -188,7 +345,7 @@ func (c *PacketCodec) Encode(pkt *Packet) ([]byte, error) {
 		plaintextLen += 2 + len(pkt.SACKBlocks)*4
 	}
 
-	// 2. Encrypt with ChaCha20-Poly1305
+	// 3. Encrypt with ChaCha20-Poly1305
 	aeadIface, err := c.getAEAD()
 	if err != nil {
 		return nil, fmt.Errorf("mtp: failed to create cipher: %w", err)
@@ -340,10 +497,23 @@ func (c *PacketCodec) Decode(wire []byte) (*Packet, error) {
 	}
 
 	// Copy payload to avoid retaining reference to pool buffer
-	pkt.Payload = make([]byte, payloadLen)
-	copy(pkt.Payload, remaining[:payloadLen])
+	rawPayload := make([]byte, payloadLen)
+	copy(rawPayload, remaining[:payloadLen])
 
-	// 6. Parse SACK blocks if present
+	// 6. Decompress if FlagCompressed is set (after decryption)
+	if pkt.Flags&FlagCompressed != 0 {
+		decompressed, err := c.decompressPayload(rawPayload)
+		if err != nil {
+			return nil, fmt.Errorf("mtp: decompression failed: %w", err)
+		}
+		pkt.Payload = decompressed
+		// Clear the compressed flag after decompression
+		pkt.Flags &^= FlagCompressed
+	} else {
+		pkt.Payload = rawPayload
+	}
+
+	// 7. Parse SACK blocks if present
 	if pkt.Flags&FlagSACK != 0 {
 		sackData := remaining[payloadLen:]
 		if len(sackData) >= 2 {

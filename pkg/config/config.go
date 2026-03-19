@@ -10,17 +10,43 @@ import (
 
 // ClientConfig represents the client configuration
 type ClientConfig struct {
-	Server     string         // Server address (IP:PORT)
-	UUID       string         // Unique authorization identifier
-	Domains    []string       // List of domains for masking
-	Transport  string         // Transport type: "mtp" or "tcp"
-	Proxies    []ProxyConfig  // Local proxy server settings
-	DNS        string         // Custom DNS server
-	Settings   ClientSettings // Fine-tuning settings
-	Routing    RoutingConfig  // Routing rules
-	ServerName string         // Server name from URL
-	LocalPort  int            // Local proxy port (for backward compatibility)
-	Android    AndroidConfig  // Android-specific configuration
+	Server        string                        // Server address (IP:PORT)
+	UUID          string                        // Unique authorization identifier
+	Domains       []string                      // List of domains for masking
+	Transport     string                        // Transport type: "mtp" or "tcp"
+	Proxies       []ProxyConfig                 // Local proxy server settings
+	DNS           string                        // Custom DNS server
+	Settings      ClientSettings                // Fine-tuning settings
+	Routing       RoutingConfig                 // Routing rules
+	ServerName    string                        // Server name from URL
+	LocalPort     int                           // Local proxy port (for backward compatibility)
+	Android       AndroidConfig                 // Android-specific configuration
+	Compression   CompressionConfig             // Data compression settings
+	CustomPresets map[string]CustomPresetConfig // Custom traffic presets
+}
+
+// CustomPresetConfig represents a custom traffic preset configuration
+type CustomPresetConfig struct {
+	Name                string           `yaml:"name"`
+	Type                string           `yaml:"type"`
+	PacketSize          RangeInt         `yaml:"packet_size"`
+	PacketsPerSecond    RangeInt         `yaml:"packets_per_sec"`
+	UploadDownloadRatio float64          `yaml:"upload_download_ratio"`
+	SessionDuration     string           `yaml:"session_duration"`
+	Patterns            []TrafficPattern `yaml:"patterns,omitempty"`
+}
+
+// RangeInt represents a min-max integer range (shared with presets package)
+type RangeInt struct {
+	Min int `yaml:"min"`
+	Max int `yaml:"max"`
+}
+
+// TrafficPattern represents a traffic pattern (shared with presets package)
+type TrafficPattern struct {
+	Type     string `yaml:"type"`
+	Duration string `yaml:"duration"`
+	Interval string `yaml:"interval"`
 }
 
 // AndroidConfig represents Android-specific configuration
@@ -35,15 +61,35 @@ type AndroidConfig struct {
 	UseProtectedSockets bool
 }
 
+// CompressionConfig represents data compression settings
+type CompressionConfig struct {
+	// Enable enables/disables compression (default: false)
+	Enable bool `yaml:"enable"`
+	// Level is the compression level (1-3): 1=Fastest, 2=Default, 3=Better
+	Level int `yaml:"level"`
+	// MinSize is the minimum size to attempt compression (default: 64 bytes)
+	MinSize int `yaml:"min_size"`
+}
+
+// DefaultCompressionConfig returns default compression settings
+func DefaultCompressionConfig() CompressionConfig {
+	return CompressionConfig{
+		Enable:  false, // Disabled by default for performance
+		Level:   2,     // Default compression level
+		MinSize: 64,    // Don't compress small packets
+	}
+}
+
 // ServerConfig represents the server configuration
 type ServerConfig struct {
-	Port       int      // Listening port
-	MaxClients int      // Maximum number of clients
-	UUID       string   // Server UUID for authentication
-	DomainList []string // List of domains for masking
-	Transport  string   // Transport type: "mtp" or "tcp"
-	DNS        string   // DNS server
-	Name       string   // Server name
+	Port        int               // Listening port
+	MaxClients  int               // Maximum number of clients
+	UUID        string            // Server UUID for authentication
+	DomainList  []string          // List of domains for masking
+	Transport   string            // Transport type: "mtp" or "tcp"
+	DNS         string            // DNS server
+	Name        string            // Server name
+	Compression CompressionConfig // Data compression settings
 }
 
 // ProxyConfig represents local proxy configuration
@@ -102,17 +148,42 @@ type clientYAMLConfig struct {
 		UseProtectedSockets bool `yaml:"use_protected_sockets"`
 		MTU                 int  `yaml:"mtu"`
 	} `yaml:"android"`
+	Compression struct {
+		Enable  bool `yaml:"enable"`
+		Level   int  `yaml:"level"`
+		MinSize int  `yaml:"min_size"`
+	} `yaml:"compression"`
+	CustomPresets map[string]struct {
+		Name                string  `yaml:"name"`
+		Type                string  `yaml:"type"`
+		PacketSizeMin       int     `yaml:"packet_size_min"`
+		PacketSizeMax       int     `yaml:"packet_size_max"`
+		PacketsPerSecondMin int     `yaml:"packets_per_sec_min"`
+		PacketsPerSecondMax int     `yaml:"packets_per_sec_max"`
+		UploadDownloadRatio float64 `yaml:"upload_download_ratio"`
+		SessionDuration     string  `yaml:"session_duration"`
+		Patterns            []struct {
+			Type     string `yaml:"type"`
+			Duration string `yaml:"duration"`
+			Interval string `yaml:"interval"`
+		} `yaml:"patterns,omitempty"`
+	} `yaml:"custom_presets,omitempty"`
 }
 
 // serverYAMLConfig represents the raw YAML server config structure
 type serverYAMLConfig struct {
-	Port       int      `yaml:"port"`
-	UUID       string   `yaml:"uuid"`
-	Transport  string   `yaml:"transport"`
-	DNS        string   `yaml:"dns"`
-	MaxClients int      `yaml:"max_clients"`
-	DomainList []string `yaml:"domain_list"`
-	Name       string   `yaml:"name"`
+	Port        int      `yaml:"port"`
+	UUID        string   `yaml:"uuid"`
+	Transport   string   `yaml:"transport"`
+	DNS         string   `yaml:"dns"`
+	MaxClients  int      `yaml:"max_clients"`
+	DomainList  []string `yaml:"domain_list"`
+	Name        string   `yaml:"name"`
+	Compression struct {
+		Enable  bool `yaml:"enable"`
+		Level   int  `yaml:"level"`
+		MinSize int  `yaml:"min_size"`
+	} `yaml:"compression"`
 }
 
 // LoadClientConfig loads client configuration from YAML file
@@ -195,6 +266,39 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 		MTU:                 yamlCfg.Android.MTU,
 	}
 
+	// Load compression config
+	cfg.Compression = DefaultCompressionConfig()
+	if yamlCfg.Compression.Level > 0 {
+		cfg.Compression.Level = yamlCfg.Compression.Level
+	}
+	if yamlCfg.Compression.MinSize > 0 {
+		cfg.Compression.MinSize = yamlCfg.Compression.MinSize
+	}
+	cfg.Compression.Enable = yamlCfg.Compression.Enable
+
+	// Load custom presets
+	if len(yamlCfg.CustomPresets) > 0 {
+		cfg.CustomPresets = make(map[string]CustomPresetConfig)
+		for name, preset := range yamlCfg.CustomPresets {
+			cfg.CustomPresets[name] = CustomPresetConfig{
+				Name:                preset.Name,
+				Type:                preset.Type,
+				PacketSize:          RangeInt{Min: preset.PacketSizeMin, Max: preset.PacketSizeMax},
+				PacketsPerSecond:    RangeInt{Min: preset.PacketsPerSecondMin, Max: preset.PacketsPerSecondMax},
+				UploadDownloadRatio: preset.UploadDownloadRatio,
+				SessionDuration:     preset.SessionDuration,
+				Patterns:            make([]TrafficPattern, len(preset.Patterns)),
+			}
+			for i, p := range preset.Patterns {
+				cfg.CustomPresets[name].Patterns[i] = TrafficPattern{
+					Type:     p.Type,
+					Duration: p.Duration,
+					Interval: p.Interval,
+				}
+			}
+		}
+	}
+
 	// Set default MTU
 	if cfg.Android.MTU <= 0 {
 		cfg.Android.MTU = 1500
@@ -224,6 +328,16 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		DomainList: yamlCfg.DomainList,
 		Name:       yamlCfg.Name,
 	}
+
+	// Load compression config
+	cfg.Compression = DefaultCompressionConfig()
+	if yamlCfg.Compression.Level > 0 {
+		cfg.Compression.Level = yamlCfg.Compression.Level
+	}
+	if yamlCfg.Compression.MinSize > 0 {
+		cfg.Compression.MinSize = yamlCfg.Compression.MinSize
+	}
+	cfg.Compression.Enable = yamlCfg.Compression.Enable
 
 	// Set default values
 	if cfg.Port == 0 {
