@@ -6,8 +6,10 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -20,6 +22,48 @@ import (
 	"github.com/google/uuid"
 	"github.com/hashicorp/yamux"
 )
+
+// detectPublicIP attempts to detect the server's public IP address
+func detectPublicIP() string {
+	// Method 1: Check external services (with timeout)
+	client := &http.Client{Timeout: 3 * time.Second}
+	services := []string{
+		"https://api.ipify.org",
+		"https://ifconfig.me/ip",
+		"https://icanhazip.com",
+	}
+
+	for _, service := range services {
+		resp, err := client.Get(service)
+		if err == nil {
+			defer resp.Body.Close()
+			ip, err := io.ReadAll(resp.Body)
+			if err == nil && len(ip) > 0 {
+				return strings.TrimSpace(string(ip))
+			}
+		}
+	}
+
+	// Method 2: Get local IP (might be private)
+	addrs, err := net.InterfaceAddrs()
+	if err == nil {
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+				if !ipNet.IP.IsPrivate() {
+					return ipNet.IP.String()
+				}
+			}
+		}
+		// Fallback to first non-loopback IP
+		for _, addr := range addrs {
+			if ipNet, ok := addr.(*net.IPNet); ok && !ipNet.IP.IsLoopback() && ipNet.IP.To4() != nil {
+				return ipNet.IP.String()
+			}
+		}
+	}
+
+	return ""
+}
 
 // Stream type markers
 const (
@@ -50,17 +94,30 @@ func main() {
 		}
 		if os.Args[1] == "generate-link" {
 			configPath := "server.yaml"
-			if len(os.Args) > 2 {
-				configPath = os.Args[2]
+			host := ""
+
+			// Parse arguments: generate-link [config.yaml] [--host IP]
+			for i := 2; i < len(os.Args); i++ {
+				if os.Args[i] == "--host" && i+1 < len(os.Args) {
+					host = os.Args[i+1]
+					i++
+				} else if !strings.HasPrefix(os.Args[i], "--") {
+					configPath = os.Args[i]
+				}
 			}
+
 			cfg, err := config.LoadServerConfig(configPath)
 			if err != nil {
 				log.Fatalf("Failed to load config %s: %v", configPath, err)
 			}
 
-			// Ideally, we'd detect the public IP here. For now, we'll use a placeholder
-			// unless the user configured a specific bind address (not just port).
-			host := "YOUR_SERVER_IP"
+			// Auto-detect host if not provided
+			if host == "" {
+				host = detectPublicIP()
+				if host == "" {
+					host = "YOUR_SERVER_IP"
+				}
+			}
 
 			link := config.GenerateMimicURL(cfg.UUID, fmt.Sprintf("%s:%d", host, cfg.Port), cfg.Name, cfg.DomainList, cfg.Transport, cfg.DNS)
 			fmt.Println("\n================================================================")
@@ -68,6 +125,12 @@ func main() {
 			fmt.Println()
 			fmt.Println(link)
 			fmt.Println("================================================================")
+
+			if host == "YOUR_SERVER_IP" {
+				fmt.Println("\n⚠️  Warning: Could not auto-detect public IP.")
+				fmt.Println("   Please specify your server's public IP:")
+				fmt.Println("   ./server generate-link server.yaml --host 192.168.1.100")
+			}
 			return
 		}
 	}

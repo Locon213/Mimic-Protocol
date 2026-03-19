@@ -120,6 +120,9 @@ nano server.yaml  # отредактируйте под себя (удалите
 | `domain_list` | []string | ❌ | Список доменов для мимикрии трафика | `["vk.com", "rutube.ru"]` |
 | `max_clients` | int | ❌ | Максимум одновременных клиентов. `0` = без ограничений | `100` |
 | `dns` | string | ❌ | DNS-сервер для резолвинга доменов | `"1.1.1.1:53"` |
+| `compression.enable` | bool | ❌ | Включить сжатие zstd. По умолчанию: `false` | `true`, `false` |
+| `compression.level` | int | ❌ | Уровень сжатия (1-3): 1=Fastest, 2=Default, 3=Better | `2` |
+| `compression.min_size` | int | ❌ | Мин. размер для сжатия (байты). По умолчанию: `64` | `64`, `128` |
 
 #### Пример минимального конфига сервера
 
@@ -134,6 +137,12 @@ domain_list:
   - telegram.org
 max_clients: 100
 dns: "1.1.1.1:53"
+
+# Сжатие данных (опционально, выключено по умолчанию)
+compression:
+  enable: false  # true = включить сжатие zstd
+  level: 2       # 1=Fastest, 2=Default, 3=Better
+  min_size: 64   # Не сжимать пакеты < 64 байт
 ```
 
 **Генерация UUID:**
@@ -169,6 +178,10 @@ mimic://550e8400-e29b-41d4-a716-446655440000@your-server.com:443?name=My-Mimic-S
 | `transport` | string | ❌ | Тип транспорта: `"mtp"` или `"tcp"` | `"mtp"` |
 | `local_port` | int | ❌ | Порт локального SOCKS5 прокси. По умолчанию: `1080` | `1080` |
 | `dns` | string | ❌ | DNS-сервер для резолвинга | `"1.1.1.1:53"` |
+| `compression.enable` | bool | ❌ | Включить сжатие zstd. По умолчанию: `false` | `true`, `false` |
+| `compression.level` | int | ❌ | Уровень сжатия (1-3). По умолчанию: `2` | `1`, `2`, `3` |
+| `compression.min_size` | int | ❌ | Мин. размер для сжатия. По умолчанию: `64` | `64`, `128` |
+| `custom_presets` | map | ❌ | Кастомные пресеты для доменов (см. ниже) | `{...}` |
 | `proxies` | []object | ❌ | Список локальных прокси (см. ниже) | `[{"type": "socks5", "port": 1080}]` |
 | `routing.default_policy` | string | ❌ | Политика по умолчанию: `proxy`, `direct`, `block` | `"proxy"` |
 | `routing.rules` | []object | ❌ | Правила маршрутизации (см. ниже) | `[...]` |
@@ -193,6 +206,62 @@ proxies:
   - type: "http"
     port: 8080
 ```
+
+#### Кастомные пресеты (`custom_presets`)
+
+Система пресетов позволяет задать специфичное поведение трафика для разных сервисов.
+
+**Встроенные пресеты:**
+- `web_generic` — веб-серфинг (500-1420 байт, 10-150 PPS)
+- `social` — соцсети (VK, Instagram)
+- `video` — видеостриминг (YouTube, Twitch)
+- `messenger` — мессенджеры (Telegram, WhatsApp)
+- `gaming` — игры (CS2, Dota 2) — малые пакеты, высокий PPS
+- `voip` — VoIP/видеозвонки (Discord, Zoom) — симметричный трафик
+
+**Пример custom_presets:**
+
+```yaml
+custom_presets:
+  # Gaming preset для Steam
+  steampowered.com:
+    name: "Gaming - Steam"
+    type: "gaming"
+    packet_size_min: 64
+    packet_size_max: 512
+    packets_per_sec_min: 30
+    packets_per_sec_max: 120
+    upload_download_ratio: 0.8
+    session_duration: "600s-3600s"
+  
+  # VoIP preset для Discord
+  discord.com:
+    name: "VoIP - Discord"
+    type: "voip"
+    packet_size_min: 80
+    packet_size_max: 300
+    packets_per_sec_min: 20
+    packets_per_sec_max: 50
+    upload_download_ratio: 1.0
+    session_duration: "300s-7200s"
+  
+  # Video preset для YouTube
+  youtube.com:
+    name: "Video - YouTube"
+    type: "video"
+    packet_size_min: 1000
+    packet_size_max: 1450
+    packets_per_sec_min: 50
+    packets_per_sec_max: 200
+    upload_download_ratio: 0.05
+    session_duration: "300s-3600s"
+```
+
+**Приоритет выбора пресетов:**
+1. Custom presets (точное совпадение домена)
+2. Custom presets (по ключевому слову)
+3. Default presets (по маппингу доменов)
+4. `web_generic` (по умолчанию)
 
 #### Настройка маршрутизации (`routing`)
 
@@ -240,6 +309,21 @@ domains:
   - telegram.org
 transport: "mtp"
 dns: "1.1.1.1:53"
+
+# Сжатие данных (опционально)
+compression:
+  enable: false  # true = включить сжатие zstd
+  level: 2       # 1=Fastest, 2=Default, 3=Better
+  min_size: 64   # Не сжимать пакеты < 64 байт
+
+# Кастомные пресеты
+custom_presets:
+  discord.com:
+    type: "voip"
+    packet_size_min: 80
+    packet_size_max: 300
+    packets_per_sec_min: 20
+    packets_per_sec_max: 50
 
 proxies:
   - type: "socks5"

@@ -107,6 +107,21 @@ cp config.example.yaml server.yaml
 nano server.yaml  # edit for your needs
 ```
 
+#### Server Configuration Options
+
+| Parameter | Type | Required | Description | Example |
+|-----------|------|----------|-------------|---------|
+| `port` | int | ❌ | MTP listening port (UDP). Default: `443` | `443`, `8443`, `8080` |
+| `uuid` | string | ✅ | Unique UUID for client authentication | `"550e8400-e29b-41d4-a716-446655440000"` |
+| `name` | string | ❌ | Server name (shown in logs and links) | `"My-Mimic-Server"` |
+| `transport` | string | ❌ | Transport type: `"mtp"` (UDP, recommended) or `"tcp"` (legacy) | `"mtp"` |
+| `domain_list` | []string | ❌ | Domains for traffic mimicry | `["vk.com", "rutube.ru"]` |
+| `max_clients` | int | ❌ | Maximum concurrent clients. `0` = unlimited | `100` |
+| `dns` | string | ❌ | DNS server for domain resolution | `"1.1.1.1:53"` |
+| `compression.enable` | bool | ❌ | Enable zstd compression. Default: `false` | `true`, `false` |
+| `compression.level` | int | ❌ | Compression level (1-3): 1=Fastest, 2=Default, 3=Better | `2` |
+| `compression.min_size` | int | ❌ | Minimum size for compression (bytes). Default: `64` | `64`, `128` |
+
 ```yaml
 # Listening port (443 recommended for HTTPS masking)
 port: 443
@@ -132,6 +147,12 @@ max_clients: 100
 
 # DNS server (optional)
 dns: "1.1.1.1:53"
+
+# Data compression (optional, disabled by default)
+compression:
+  enable: false  # true = enable zstd compression
+  level: 2       # 1=Fastest, 2=Default, 3=Better
+  min_size: 64   # Don't compress packets < 64 bytes
 ```
 
 **Generate UUID:**
@@ -154,10 +175,103 @@ mimic://550e8400-e29b-41d4-a716-446655440000@your-server.com:443?name=My-Mimic-S
 
 ### Client Setup (`config.yaml`)
 
+#### Client Configuration Options
+
+| Parameter | Type | Required | Description | Example |
+|-----------|------|----------|-------------|---------|
+| `server` | string | ✅ | Server address (IP:PORT or domain:PORT) | `"192.168.1.100:443"` |
+| `uuid` | string | ✅ | UUID for authentication (must match server) | `"550e8400-e29b-41d4-a716-446655440000"` |
+| `domains` | []string | ❌ | Domains for mimicry | `["vk.com", "telegram.org"]` |
+| `transport` | string | ❌ | Transport type: `"mtp"` or `"tcp"` | `"mtp"` |
+| `local_port` | int | ❌ | Local SOCKS5 proxy port. Default: `1080` | `1080` |
+| `dns` | string | ❌ | DNS server for resolution | `"1.1.1.1:53"` |
+| `compression.enable` | bool | ❌ | Enable zstd compression. Default: `false` | `true`, `false` |
+| `compression.level` | int | ❌ | Compression level (1-3). Default: `2` | `1`, `2`, `3` |
+| `compression.min_size` | int | ❌ | Minimum size for compression. Default: `64` | `64`, `128` |
+| `custom_presets` | map | ❌ | Custom presets for domains (see below) | `{...}` |
+
+#### Custom Presets (`custom_presets`)
+
+The preset system allows you to define specific traffic behavior for different services.
+
+**Built-in presets:**
+- `web_generic` — Web browsing (500-1420 bytes, 10-150 PPS)
+- `social` — Social networks (VK, Instagram)
+- `video` — Video streaming (YouTube, Twitch)
+- `messenger` — Messengers (Telegram, WhatsApp)
+- `gaming` — Gaming (CS2, Dota 2) — small packets, high PPS
+- `voip` — VoIP/video calls (Discord, Zoom) — symmetric traffic
+
+**Example custom_presets:**
+
+```yaml
+custom_presets:
+  # Gaming preset for Steam
+  steampowered.com:
+    name: "Gaming - Steam"
+    type: "gaming"
+    packet_size_min: 64
+    packet_size_max: 512
+    packets_per_sec_min: 30
+    packets_per_sec_max: 120
+    upload_download_ratio: 0.8
+    session_duration: "600s-3600s"
+  
+  # VoIP preset for Discord
+  discord.com:
+    name: "VoIP - Discord"
+    type: "voip"
+    packet_size_min: 80
+    packet_size_max: 300
+    packets_per_sec_min: 20
+    packets_per_sec_max: 50
+    upload_download_ratio: 1.0
+    session_duration: "300s-7200s"
+  
+  # Video preset for YouTube
+  youtube.com:
+    name: "Video - YouTube"
+    type: "video"
+    packet_size_min: 1000
+    packet_size_max: 1450
+    packets_per_sec_min: 50
+    packets_per_sec_max: 200
+    upload_download_ratio: 0.05
+    session_duration: "300s-3600s"
+```
+
+**Preset selection priority:**
+1. Custom presets (exact domain match)
+2. Custom presets (by keyword)
+3. Default presets (by domain mapping)
+4. `web_generic` (default)
+
+#### Full Client Configuration Example
+
 ```yaml
 server: "your-mimic-server.com:443"
-uuid: "your-uuid-here"
-local_port: 1080  # SOCKS5 proxy port (TCP/UDP)
+uuid: "550e8400-e29b-41d4-a716-446655440000"
+local_port: 1080
+
+# Data compression (optional)
+compression:
+  enable: false  # true = enable zstd compression
+  level: 2       # 1=Fastest, 2=Default, 3=Better
+  min_size: 64   # Don't compress packets < 64 bytes
+
+# Custom presets
+custom_presets:
+  discord.com:
+    type: "voip"
+    packet_size_min: 80
+    packet_size_max: 300
+    packets_per_sec_min: 20
+    packets_per_sec_max: 50
+
+domains:
+  - vk.com          # Preset "social"
+  - rutube.ru       # Preset "video"
+  - telegram.org    # Preset "messenger"
 
 # Routing Engine (Optional)
 routing:
@@ -169,11 +283,6 @@ routing:
     - type: ip_cidr
       value: 127.0.0.0/8
       policy: block
-
-domains:
-  - vk.com          # Preset "social"
-  - rutube.ru       # Preset "video"
-  - telegram.org    # Preset "messenger"
 
 settings:
   switch_time: "60s-300s"   # Change profile every 1-5 minutes

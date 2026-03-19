@@ -80,8 +80,37 @@ switch ($Action) {
         Write-Host "Remember to update your config in: $ConfigPath" -ForegroundColor Yellow
     }
     "generate-link" {
+        # Parse optional --host parameter
+        $HostIP = ""
+        for ($i = 1; $i -lt $args.Count; $i++) {
+            if ($args[$i] -eq "--host" -and $i + 1 -lt $args.Count) {
+                $HostIP = $args[$i + 1]
+                break
+            }
+        }
+        
         if (Test-Path $BinaryPath) {
-            & $BinaryPath generate-link $ConfigPath
+            if ($HostIP -eq "") {
+                # Try to auto-detect public IP
+                Write-Host "Detecting public IP..." -ForegroundColor Cyan
+                try {
+                    $PublicIP = Invoke-RestMethod -Uri "https://api.ipify.org?format=json" -TimeoutSec 5 -ErrorAction SilentlyContinue
+                    if ($PublicIP.ip) {
+                        $HostIP = $PublicIP.ip
+                        Write-Host "Detected public IP: $HostIP" -ForegroundColor Green
+                    }
+                } catch {
+                    Write-Host "Could not auto-detect public IP." -ForegroundColor Yellow
+                }
+            }
+            
+            if ($HostIP -ne "") {
+                & $BinaryPath generate-link $ConfigPath --host $HostIP
+            } else {
+                & $BinaryPath generate-link $ConfigPath
+                Write-Host "`n⚠️  To specify IP manually, use:" -ForegroundColor Yellow
+                Write-Host "   .\mimic.ps1 generate-link --host YOUR_IP" -ForegroundColor Cyan
+            }
         } else {
             Write-Host "Error: mimic-server.exe not found at $BinaryPath." -ForegroundColor Red
         }

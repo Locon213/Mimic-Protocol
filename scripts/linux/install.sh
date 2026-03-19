@@ -53,20 +53,43 @@ mkdir -p /etc/mimic/
 UUID=$(/usr/local/bin/mimic-server generate-uuid)
 echo "Generated UUID: $UUID"
 
+# Try to detect public IP
+echo "=> Detecting public IP..."
+PUBLIC_IP=$(curl -s --max-time 5 https://api.ipify.org || echo "")
+if [ -z "$PUBLIC_IP" ]; then
+    PUBLIC_IP="YOUR_SERVER_IP"
+    echo "   ⚠️  Could not auto-detect public IP. Please update server.yaml manually."
+else
+    echo "   ✓ Detected public IP: $PUBLIC_IP"
+fi
+
 cat <<EOF > /etc/mimic/server.yaml
+# Mimic Protocol Server Configuration
+# Documentation: https://github.com/Locon213/Mimic-Protocol
+
 port: 443
 uuid: "$UUID"
-domains_file: "/etc/mimic/domains.txt"
-max_clients: 100
-rate_limit: 0
+name: "Mimic-Server"
 transport: "mtp"
-EOF
 
-# Default whitelist
-cat <<EOF > /etc/mimic/domains.txt
-vk.com
-rutube.ru
-yandex.ru
+# Domains for traffic mimicry
+domain_list:
+  - vk.com
+  - rutube.ru
+  - telegram.org
+  - wikipedia.org
+
+# Max clients (0 = unlimited)
+max_clients: 100
+
+# DNS server (optional)
+dns: "1.1.1.1:53"
+
+# Data compression (optional, disabled by default for performance)
+# compression:
+#   enable: false
+#   level: 2
+#   min_size: 64
 EOF
 
 echo "=> Creating Systemd Service..."
@@ -91,14 +114,32 @@ systemctl daemon-reload
 systemctl enable mimic-server
 systemctl start mimic-server
 
+# Generate connection link
+echo ""
+echo "=> Generating connection link..."
+LINK=$(/usr/local/bin/mimic-server generate-link /etc/mimic/server.yaml --host "$PUBLIC_IP" 2>/dev/null | grep "mimic://" || echo "")
+
 echo "============================================="
 echo " Installation Complete!"
+echo "============================================="
+echo ""
 echo " Server configuration: /etc/mimic/server.yaml"
 echo " Service status: systemctl status mimic-server"
-echo " "
-echo " You can use the new CLI tool to manage the server:"
+echo ""
+if [ -n "$LINK" ] && [ "$PUBLIC_IP" != "YOUR_SERVER_IP" ]; then
+    echo "🚀 Client connection link:"
+    echo "$LINK"
+else
+    echo "⚠️  To generate client link:"
+    echo "   mimic generate-link"
+    echo "   # or specify IP manually:"
+    echo "   mimic-server generate-link /etc/mimic/server.yaml --host YOUR_IP"
+fi
+echo ""
+echo " CLI commands:"
 echo "   mimic status-server"
-echo "   mimic reload-server"
+echo "   mimic restart-server"
 echo "   mimic stop-server"
-echo "   mimic config_path"
+echo "   mimic generate-uuid"
+echo "   mimic generate-link"
 echo "============================================="

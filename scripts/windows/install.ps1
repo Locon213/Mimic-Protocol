@@ -51,26 +51,57 @@ if (Test-Path ".\server.exe") {
 
 # Generate Config
 $ConfigPath = "$InstallDir\server.yaml"
-$DomainsFile = "$InstallDir\domains.txt"
 
-if (-not (Test-Path $DomainsFile)) {
-    Write-Host "=> Generating domains.txt..."
-    Set-Content -Path $DomainsFile -Value "vk.com`nrutube.ru`nyandex.ru" -Encoding UTF8
+# Try to detect public IP
+Write-Host "=> Detecting public IP..." -ForegroundColor Cyan
+$PublicIP = ""
+try {
+    $Response = Invoke-RestMethod -Uri "https://api.ipify.org?format=json" -TimeoutSec 5 -ErrorAction SilentlyContinue
+    if ($Response.ip) {
+        $PublicIP = $Response.ip
+        Write-Host "   ✓ Detected public IP: $PublicIP" -ForegroundColor Green
+    }
+} catch {
+    Write-Host "   ⚠️  Could not auto-detect public IP. Will use placeholder." -ForegroundColor Yellow
+}
+
+if ($PublicIP -eq "") {
+    $PublicIP = "YOUR_SERVER_IP"
 }
 
 if (-not (Test-Path $ConfigPath)) {
     Write-Host "=> Generating default server.yaml..."
-    
+
     # Generate UUID natively in PowerShell
     $UUID = [guid]::NewGuid().ToString()
 
     $YamlContent = @"
+# Mimic Protocol Server Configuration
+# Documentation: https://github.com/Locon213/Mimic-Protocol
+
 port: 443
 uuid: "$UUID"
-domains_file: "$($DomainsFile -replace '\\', '\\')"
-max_clients: 100
-rate_limit: 0
+name: "Mimic-Server"
 transport: "mtp"
+
+# Domains for traffic mimicry
+domain_list:
+  - vk.com
+  - rutube.ru
+  - telegram.org
+  - wikipedia.org
+
+# Max clients (0 = unlimited)
+max_clients: 100
+
+# DNS server (optional)
+dns: "1.1.1.1:53"
+
+# Data compression (optional, disabled by default for performance)
+# compression:
+#   enable: false
+#   level: 2
+#   min_size: 64
 "@
     Set-Content -Path $ConfigPath -Value $YamlContent -Encoding UTF8
     Write-Host "Generated server UUID: $UUID"
@@ -114,14 +145,38 @@ Register-ScheduledTask -TaskName $TaskName -Action $Action -Principal $Principal
 Write-Host "=> Starting Server..."
 Start-ScheduledTask -TaskName $TaskName
 
+# Generate connection link
+Write-Host ""
+Write-Host "=> Generating connection link..." -ForegroundColor Cyan
+$LinkOutput = ""
+if ($PublicIP -ne "YOUR_SERVER_IP") {
+    $LinkOutput = & $BinaryPath generate-link $ConfigPath --host $PublicIP 2>&1 | Out-String
+}
+
 Write-Host "=============================================" -ForegroundColor Cyan
 Write-Host " Installation Complete!" -ForegroundColor Green
+Write-Host "=============================================" -ForegroundColor Cyan
+Write-Host ""
 Write-Host " Server configuration: $ConfigPath"
-Write-Host " Sub-domains allowed: $DomainsFile"
-Write-Host " "
-Write-Host " You can use the CLI tool to manage the server:"
+Write-Host " Service status: powershell -File mimic.ps1 status-server"
+Write-Host ""
+
+if ($LinkOutput -like "*mimic://*" -and $PublicIP -ne "YOUR_SERVER_IP") {
+    Write-Host "🚀 Client connection link:" -ForegroundColor Green
+    echo $LinkOutput | Select-String "mimic://"
+} else {
+    Write-Host "⚠️  To generate client link:" -ForegroundColor Yellow
+    Write-Host "   powershell -File mimic.ps1 generate-link" -ForegroundColor Cyan
+    Write-Host "   # or specify IP manually:" -ForegroundColor Yellow
+    Write-Host "   powershell -File mimic.ps1 generate-link --host YOUR_IP" -ForegroundColor Cyan
+}
+
+Write-Host ""
+Write-Host " CLI commands:" -ForegroundColor Cyan
 Write-Host "   powershell -File mimic.ps1 start-server"
 Write-Host "   powershell -File mimic.ps1 stop-server"
+Write-Host "   powershell -File mimic.ps1 restart-server"
 Write-Host "   powershell -File mimic.ps1 status-server"
 Write-Host "   powershell -File mimic.ps1 generate-uuid"
+Write-Host "   powershell -File mimic.ps1 generate-link"
 Write-Host "=============================================" -ForegroundColor Cyan
