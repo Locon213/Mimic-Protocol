@@ -7,7 +7,6 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 10
-    reviewers: []
     labels:
       - "dependencies"
       - "go"
@@ -22,7 +21,6 @@ updates:
       interval: "weekly"
       day: "monday"
     open-pull-requests-limit: 5
-    reviewers: []
     labels:
       - "dependencies"
       - "github-actions"
