@@ -321,7 +321,16 @@ The project relies on the following powerful open-source libraries:
 
 ### ⚡ Quick Install on Linux (Automatic)
 
-**Requirements:** Ubuntu/Debian, CentOS/RHEL/Fedora, Arch Linux (root access)
+**Supported distributions:**
+- 🐧 **Ubuntu/Debian** (apt)
+- 🔴 **CentOS/RHEL** (yum/dnf)
+- 🔵 **AlmaLinux/Rocky Linux** (dnf)
+- 🟡 **Fedora** (dnf)
+- 🟢 **Arch Linux/Manjaro** (pacman)
+- 🔷 **openSUSE** (zypper)
+- 🏔️ **Alpine Linux** (apk)
+
+**Requirements:** root access
 
 ```bash
 # 1. Clone repository
@@ -335,23 +344,40 @@ sudo bash scripts/linux/install.sh
 ```
 
 The installer automatically:
-- ✅ Downloads pre-built binary for your architecture (amd64/arm64)
-- ✅ Installs dependencies (Go, systemd, jq)
+- ✅ Detects your distribution and installs dependencies
+- ✅ Downloads pre-built binary for your architecture (amd64/arm64/arm)
 - ✅ Generates UUID and creates config at `/etc/mimic/server.yaml`
 - ✅ Configures systemd service
 - ✅ Enables auto-start on boot
+- ✅ **Applies performance optimizations:**
+  - BBR congestion control for maximum throughput
+  - Increased network buffers
+  - Optimized file descriptor limits
+  - TCP Fast Open for reduced latency
 
 #### Server Management via CLI
 
 After installation, use the `mimic` command:
 
 ```bash
+# Server management
 mimic status-server      # Server status
 mimic restart-server     # Restart
 mimic stop-server        # Stop
+mimic start-server       # Start
+
+# Configuration
 mimic generate-uuid      # Generate UUID
 mimic generate-link      # Client connection link
-mimic config_path        # Config file path
+mimic config-path        # Config file path
+mimic edit-config        # Open config in editor
+
+# Diagnostics
+mimic logs               # Last 50 log lines
+mimic logs-follow        # Real-time logs
+mimic optimize-status    # System optimization status
+mimic check-bbr          # Check BBR congestion control
+mimic version            # Server version
 ```
 
 #### Manual Firewall Configuration
@@ -361,9 +387,15 @@ mimic config_path        # Config file path
 sudo ufw allow 443/udp
 sudo ufw reload
 
-# firewalld (CentOS/Fedora)
+# firewalld (CentOS/RHEL/Fedora/AlmaLinux/Rocky)
 sudo firewall-cmd --permanent --add-port=443/udp
 sudo firewall-cmd --reload
+
+# iptables (universal)
+sudo iptables -A INPUT -p udp --dport 443 -j ACCEPT
+sudo iptables-save > /etc/iptables/rules.v4  # Debian/Ubuntu
+# or
+sudo service iptables save  # CentOS/RHEL
 ```
 
 ---
@@ -373,10 +405,27 @@ sudo firewall-cmd --reload
 If you prefer manual setup or want to build from source:
 
 ```bash
-# 1. Install Go
-sudo apt update && sudo apt install -y golang-go  # Ubuntu/Debian
-# or
-sudo dnf install -y golang  # CentOS/Fedora
+# 1. Install Go (choose your distribution)
+
+# Ubuntu/Debian
+sudo apt update && sudo apt install -y golang-go
+
+# CentOS/RHEL/AlmaLinux/Rocky
+sudo dnf install -y golang
+# or for older versions:
+sudo yum install -y golang
+
+# Fedora
+sudo dnf install -y golang
+
+# Arch Linux/Manjaro
+sudo pacman -S go
+
+# openSUSE
+sudo zypper install go
+
+# Alpine Linux
+apk add go
 
 # 2. Build
 git clone https://github.com/Locon213/Mimic-Protocol.git

@@ -387,7 +387,16 @@ settings:
 
 ### ⚡ Быстрая установка на Linux (автоматическая)
 
-**Требования:** Ubuntu/Debian, CentOS/RHEL/Fedora, Arch Linux (root-доступ)
+**Поддерживаемые дистрибутивы:**
+- 🐧 **Ubuntu/Debian** (apt)
+- 🔴 **CentOS/RHEL** (yum/dnf)
+- 🔵 **AlmaLinux/Rocky Linux** (dnf)
+- 🟡 **Fedora** (dnf)
+- 🟢 **Arch Linux/Manjaro** (pacman)
+- 🔷 **openSUSE** (zypper)
+- 🏔️ **Alpine Linux** (apk)
+
+**Требования:** root-доступ
 
 ```bash
 # 1. Клонирование репозитория
@@ -401,23 +410,40 @@ sudo bash scripts/linux/install.sh
 ```
 
 Установщик автоматически:
-- ✅ Скачает готовый бинарник для вашей архитектуры (amd64/arm64)
-- ✅ Установит зависимости (Go, systemd, jq)
+- ✅ Определит ваш дистрибутив и установит зависимости
+- ✅ Скачает готовый бинарник для вашей архитектуры (amd64/arm64/arm)
 - ✅ Сгенерирует UUID и создаст конфиг в `/etc/mimic/server.yaml`
 - ✅ Настроит systemd-сервис
 - ✅ Включит автозапуск при загрузке
+- ✅ **Применит оптимизации для высокой производительности:**
+  - BBR congestion control для максимальной пропускной способности
+  - Увеличенные сетевые буферы
+  - Оптимизированные лимиты файловых дескрипторов
+  - TCP Fast Open для уменьшения задержек
 
 #### Управление сервером через CLI
 
 После установки доступна команда `mimic`:
 
 ```bash
+# Управление сервером
 mimic status-server      # Статус сервера
 mimic restart-server     # Перезапуск
 mimic stop-server        # Остановка
+mimic start-server       # Запуск
+
+# Конфигурация
 mimic generate-uuid      # Генерация UUID
 mimic generate-link      # Ссылка для клиента
-mimic config_path        # Путь к конфигу
+mimic config-path        # Путь к конфигу
+mimic edit-config        # Открыть конфиг в редакторе
+
+# Диагностика
+mimic logs               # Последние 50 строк логов
+mimic logs-follow        # Логи в реальном времени
+mimic optimize-status    # Статус оптимизаций системы
+mimic check-bbr          # Проверка BBR congestion control
+mimic version            # Версия сервера
 ```
 
 #### Ручная настройка фаервола
@@ -427,9 +453,15 @@ mimic config_path        # Путь к конфигу
 sudo ufw allow 443/udp
 sudo ufw reload
 
-# firewalld (CentOS/Fedora)
+# firewalld (CentOS/RHEL/Fedora/AlmaLinux/Rocky)
 sudo firewall-cmd --permanent --add-port=443/udp
 sudo firewall-cmd --reload
+
+# iptables (универсальный)
+sudo iptables -A INPUT -p udp --dport 443 -j ACCEPT
+sudo iptables-save > /etc/iptables/rules.v4  # Debian/Ubuntu
+# или
+sudo service iptables save  # CentOS/RHEL
 ```
 
 ---
@@ -439,10 +471,27 @@ sudo firewall-cmd --reload
 Если вы предпочитаете ручную настройку или хотите собрать из исходников:
 
 ```bash
-# 1. Установка Go
-sudo apt update && sudo apt install -y golang-go  # Ubuntu/Debian
-# или
-sudo dnf install -y golang  # CentOS/Fedora
+# 1. Установка Go (выберите ваш дистрибутив)
+
+# Ubuntu/Debian
+sudo apt update && sudo apt install -y golang-go
+
+# CentOS/RHEL/AlmaLinux/Rocky
+sudo dnf install -y golang
+# или для старых версий:
+sudo yum install -y golang
+
+# Fedora
+sudo dnf install -y golang
+
+# Arch Linux/Manjaro
+sudo pacman -S go
+
+# openSUSE
+sudo zypper install go
+
+# Alpine Linux
+apk add go
 
 # 2. Сборка
 git clone https://github.com/Locon213/Mimic-Protocol.git
