@@ -119,7 +119,17 @@ func main() {
 				}
 			}
 
-			link := config.GenerateMimicURL(cfg.UUID, fmt.Sprintf("%s:%d", host, cfg.Port), cfg.Name, cfg.DomainList, cfg.Transport, cfg.DNS)
+			// Create ClientConfig for URL generation
+			clientCfg := &config.ClientConfig{
+				Server:      fmt.Sprintf("%s:%d", host, cfg.Port),
+				UUID:        cfg.UUID,
+				Domains:     cfg.DomainList,
+				Transport:   cfg.Transport,
+				DNS:         cfg.DNS,
+				ServerName:  cfg.Name,
+				Compression: cfg.Compression,
+			}
+			link := config.GenerateMimicURL(clientCfg)
 			fmt.Println("\n================================================================")
 			fmt.Println("🚀 Share this link with clients to connect:")
 			fmt.Println()
@@ -168,8 +178,11 @@ func main() {
 			Port:       port,
 			MaxClients: 100,
 			UUID:       "550e8400-e29b-41d4-a716-446655440000",
-			DomainList: []string{"vk.com", "wikipedia.org"},
-			Transport:  "mtp",
+			DomainList: []config.DomainEntry{
+				{Domain: "vk.com"},
+				{Domain: "wikipedia.org"},
+			},
+			Transport: "mtp",
 		}
 	} else {
 		if port != 443 {
