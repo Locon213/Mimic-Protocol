@@ -98,7 +98,7 @@ jobs:
                 "target": "security"
               }
             ],
-            "template": "## Changes\n\n${{ changes }}\n\n<details>\n<summary>Uncategorized</summary>\n\n${{ uncategorized }}\n\n</details>"
+            "template": "## Changes\n\n$CHANGES\n\n<details>\n<summary>Uncategorized</summary>\n\n$UNCATEGORIZED\n\n</details>"
           }
 
   release:
