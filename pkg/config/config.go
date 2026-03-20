@@ -19,7 +19,7 @@ type ClientConfig struct {
 	Server        string                        // Server address (IP:PORT)
 	UUID          string                        // Unique authorization identifier
 	Domains       []DomainEntry                 // List of domains for masking (with optional preset)
-	Transport     string                        // Transport type: "mtp" or "tcp"
+	Transport     string                        // Transport type: "mtp", "tcp", "ws", "wss"
 	Proxies       []ProxyConfig                 // Local proxy server settings
 	DNS           string                        // Custom DNS server
 	Settings      ClientSettings                // Fine-tuning settings
@@ -29,6 +29,7 @@ type ClientConfig struct {
 	Android       AndroidConfig                 // Android-specific configuration
 	Compression   CompressionConfig             // Data compression settings
 	CustomPresets map[string]CustomPresetConfig // Custom traffic presets
+	WebSocket     WebSocketConfig               // WebSocket-specific configuration
 }
 
 // CustomPresetConfig represents a custom traffic preset configuration
@@ -86,16 +87,36 @@ func DefaultCompressionConfig() CompressionConfig {
 	}
 }
 
+// WebSocketConfig represents WebSocket-specific configuration
+type WebSocketConfig struct {
+	// Path is the URL path for WebSocket endpoint (default: "/ws")
+	Path string `yaml:"path"`
+	// Host is the Host header value for masquerading (optional)
+	Host string `yaml:"host"`
+	// TLS enables WSS (WebSocket over TLS) (default: false)
+	TLS bool `yaml:"tls"`
+}
+
+// DefaultWebSocketConfig returns default WebSocket settings
+func DefaultWebSocketConfig() WebSocketConfig {
+	return WebSocketConfig{
+		Path: "/ws",
+		Host: "",
+		TLS:  false,
+	}
+}
+
 // ServerConfig represents the server configuration
 type ServerConfig struct {
 	Port        int               // Listening port
 	MaxClients  int               // Maximum number of clients
 	UUID        string            // Server UUID for authentication
 	DomainList  []DomainEntry     // List of domains for masking (with optional preset)
-	Transport   string            // Transport type: "mtp" or "tcp"
+	Transport   string            // Transport type: "mtp", "tcp", "ws", "wss"
 	DNS         string            // DNS server
 	Name        string            // Server name
 	Compression CompressionConfig // Data compression settings
+	WebSocket   WebSocketConfig   // WebSocket-specific configuration
 }
 
 // ProxyConfig represents local proxy configuration
@@ -162,6 +183,11 @@ type clientYAMLConfig struct {
 		Level   int  `yaml:"level"`
 		MinSize int  `yaml:"min_size"`
 	} `yaml:"compression"`
+	WebSocket struct {
+		Path string `yaml:"path"`
+		Host string `yaml:"host"`
+		TLS  bool   `yaml:"tls"`
+	} `yaml:"websocket"`
 	CustomPresets map[string]struct {
 		Name                string  `yaml:"name"`
 		Type                string  `yaml:"type"`
@@ -196,6 +222,11 @@ type serverYAMLConfig struct {
 		Level   int  `yaml:"level"`
 		MinSize int  `yaml:"min_size"`
 	} `yaml:"compression"`
+	WebSocket struct {
+		Path string `yaml:"path"`
+		Host string `yaml:"host"`
+		TLS  bool   `yaml:"tls"`
+	} `yaml:"websocket"`
 }
 
 // LoadClientConfig loads client configuration from YAML file
@@ -296,6 +327,16 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 	}
 	cfg.Compression.Enable = yamlCfg.Compression.Enable
 
+	// Load WebSocket config
+	cfg.WebSocket = DefaultWebSocketConfig()
+	if yamlCfg.WebSocket.Path != "" {
+		cfg.WebSocket.Path = yamlCfg.WebSocket.Path
+	}
+	if yamlCfg.WebSocket.Host != "" {
+		cfg.WebSocket.Host = yamlCfg.WebSocket.Host
+	}
+	cfg.WebSocket.TLS = yamlCfg.WebSocket.TLS
+
 	// Load custom presets
 	if len(yamlCfg.CustomPresets) > 0 {
 		cfg.CustomPresets = make(map[string]CustomPresetConfig)
@@ -358,6 +399,16 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		cfg.Compression.MinSize = yamlCfg.Compression.MinSize
 	}
 	cfg.Compression.Enable = yamlCfg.Compression.Enable
+
+	// Load WebSocket config
+	cfg.WebSocket = DefaultWebSocketConfig()
+	if yamlCfg.WebSocket.Path != "" {
+		cfg.WebSocket.Path = yamlCfg.WebSocket.Path
+	}
+	if yamlCfg.WebSocket.Host != "" {
+		cfg.WebSocket.Host = yamlCfg.WebSocket.Host
+	}
+	cfg.WebSocket.TLS = yamlCfg.WebSocket.TLS
 
 	// Convert domain_list from YAML format
 	for i, d := range yamlCfg.DomainList {

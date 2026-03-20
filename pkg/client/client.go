@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"github.com/Locon213/Mimic-Protocol/pkg/network"
 	"github.com/Locon213/Mimic-Protocol/pkg/proxy"
 	"github.com/Locon213/Mimic-Protocol/pkg/routing"
+	"github.com/Locon213/Mimic-Protocol/pkg/transport"
 	"github.com/Locon213/Mimic-Protocol/pkg/tunnel"
 	"github.com/Locon213/Mimic-Protocol/pkg/version"
 	"github.com/hashicorp/yamux"
@@ -120,7 +122,7 @@ func NewClient(cfg *config.ClientConfig) (*Client, error) {
 	return c, nil
 }
 
-// Start connects to the MTP server
+// Start connects to the server using configured transport
 func (c *Client) Start(ctx context.Context) error {
 	if c == nil {
 		return ErrNilClient
@@ -148,7 +150,48 @@ func (c *Client) Start(ctx context.Context) error {
 	// 1. Initialize Resolver
 	resolver := network.NewCachedResolver(c.cfg.DNS, 10*time.Minute)
 
-	// 2. Connect via MTP with compression config
+	// 2. Connect using configured transport
+	var conn net.Conn
+	var err error
+
+	switch c.cfg.Transport {
+	case "ws", "wss":
+		conn, err = c.connectWebSocket(ctx)
+	case "mtp":
+		conn, err = c.connectMTP(resolver)
+	case "tcp":
+		conn, err = c.connectTCP(ctx)
+	default:
+		// Default to MTP
+		conn, err = c.connectMTP(resolver)
+	}
+
+	if err != nil {
+		c.status.Store(int32(StatusDisconnected))
+		return fmt.Errorf("%s connection failed: %w", c.cfg.Transport, err)
+	}
+
+	// 3. Start yamux session
+	session, err := yamux.Client(conn, nil)
+	if err != nil {
+		conn.Close()
+		c.status.Store(int32(StatusDisconnected))
+		return fmt.Errorf("yamux session failed: %w", err)
+	}
+
+	c.session = session
+	c.connectedAt = time.Now()
+	c.status.Store(int32(StatusConnected))
+
+	// Start statistics collection
+	go c.collectStats()
+
+	log.Printf("✅ Connected to %s via %s", c.cfg.Server, c.cfg.Transport)
+	return nil
+}
+
+// connectMTP connects using MTP protocol
+func (c *Client) connectMTP(resolver *network.CachedResolver) (net.Conn, error) {
 	var compression *mtp.CompressionConfig
 	if c.cfg.Compression.Enable {
 		compression = &mtp.CompressionConfig{
@@ -161,27 +204,37 @@ func (c *Client) Start(ctx context.Context) error {
 
 	mtpConn, err := mtp.DialWithConfig(resolver, c.cfg.Server, c.cfg.UUID, compression)
 	if err != nil {
-		c.status.Store(int32(StatusDisconnected))
-		return fmt.Errorf("mtp dial failed: %w", err)
+		return nil, fmt.Errorf("mtp dial failed: %w", err)
 	}
 
-	// 3. Start yamux session
-	session, err := yamux.Client(mtpConn, nil)
+	return mtpConn, nil
+}
+
+// connectWebSocket connects using WebSocket protocol
+func (c *Client) connectWebSocket(ctx context.Context) (net.Conn, error) {
+	wsConfig := &transport.WebSocketConfig{
+		Path: c.cfg.WebSocket.Path,
+		Host: c.cfg.WebSocket.Host,
+		TLS:  c.cfg.WebSocket.TLS,
+	}
+
+	wsTransport := transport.NewWebSocketTransport(wsConfig)
+	conn, err := wsTransport.Dial(ctx, c.cfg.Server)
 	if err != nil {
-		mtpConn.Close()
-		c.status.Store(int32(StatusDisconnected))
-		return fmt.Errorf("yamux session failed: %w", err)
+		return nil, fmt.Errorf("websocket dial failed: %w", err)
 	}
 
-	c.session = session
-	c.connectedAt = time.Now()
-	c.status.Store(int32(StatusConnected))
+	return conn, nil
+}
 
-	// Start statistics collection
-	go c.collectStats()
+// connectTCP connects using TCP protocol (legacy)
+func (c *Client) connectTCP(ctx context.Context) (net.Conn, error) {
+	conn, err := network.DialProtectedContext(ctx, "tcp", c.cfg.Server)
+	if err != nil {
+		return nil, fmt.Errorf("tcp dial failed: %w", err)
+	}
 
-	log.Printf("✅ Connected to %s via MTP", c.cfg.Server)
-	return nil
+	return conn, nil
 }
 
 // Stop gracefully disconnects from the server
