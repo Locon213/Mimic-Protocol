@@ -30,6 +30,7 @@ type ClientConfig struct {
 	Compression   CompressionConfig             // Data compression settings
 	CustomPresets map[string]CustomPresetConfig // Custom traffic presets
 	WebSocket     WebSocketConfig               // WebSocket-specific configuration
+	Buffer        BufferConfig                  // Buffer optimization settings
 }
 
 // CustomPresetConfig represents a custom traffic preset configuration
@@ -87,6 +88,25 @@ func DefaultCompressionConfig() CompressionConfig {
 	}
 }
 
+// BufferConfig represents buffer optimization settings
+type BufferConfig struct {
+	// RelayBufferSize is the buffer size for relay operations in bytes (default: 131072 = 128KB)
+	RelayBufferSize int `yaml:"relay_buffer_size"`
+	// ReadBufferSize is the buffer size for reading operations in bytes (default: 65536 = 64KB)
+	ReadBufferSize int `yaml:"read_buffer_size"`
+	// EnableOptimizedBuffers enables optimized buffer sizes for high-speed networks (default: true)
+	EnableOptimizedBuffers bool `yaml:"enable_optimized_buffers"`
+}
+
+// DefaultBufferConfig returns default buffer settings
+func DefaultBufferConfig() BufferConfig {
+	return BufferConfig{
+		RelayBufferSize:        128 * 1024, // 128KB - optimized for high-speed networks
+		ReadBufferSize:         64 * 1024,  // 64KB - optimized for high-speed networks
+		EnableOptimizedBuffers: true,       // Enabled by default
+	}
+}
+
 // WebSocketConfig represents WebSocket-specific configuration
 type WebSocketConfig struct {
 	// Path is the URL path for WebSocket endpoint (default: "/ws")
@@ -117,6 +137,7 @@ type ServerConfig struct {
 	Name        string            // Server name
 	Compression CompressionConfig // Data compression settings
 	WebSocket   WebSocketConfig   // WebSocket-specific configuration
+	Buffer      BufferConfig      // Buffer optimization settings
 }
 
 // ProxyConfig represents local proxy configuration
@@ -188,6 +209,11 @@ type clientYAMLConfig struct {
 		Host string `yaml:"host"`
 		TLS  bool   `yaml:"tls"`
 	} `yaml:"websocket"`
+	Buffer struct {
+		RelayBufferSize        int  `yaml:"relay_buffer_size"`
+		ReadBufferSize         int  `yaml:"read_buffer_size"`
+		EnableOptimizedBuffers bool `yaml:"enable_optimized_buffers"`
+	} `yaml:"buffer"`
 	CustomPresets map[string]struct {
 		Name                string  `yaml:"name"`
 		Type                string  `yaml:"type"`
@@ -227,6 +253,11 @@ type serverYAMLConfig struct {
 		Host string `yaml:"host"`
 		TLS  bool   `yaml:"tls"`
 	} `yaml:"websocket"`
+	Buffer struct {
+		RelayBufferSize        int  `yaml:"relay_buffer_size"`
+		ReadBufferSize         int  `yaml:"read_buffer_size"`
+		EnableOptimizedBuffers bool `yaml:"enable_optimized_buffers"`
+	} `yaml:"buffer"`
 }
 
 // LoadClientConfig loads client configuration from YAML file
@@ -327,6 +358,16 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 	}
 	cfg.Compression.Enable = yamlCfg.Compression.Enable
 
+	// Load buffer config
+	cfg.Buffer = DefaultBufferConfig()
+	if yamlCfg.Buffer.RelayBufferSize > 0 {
+		cfg.Buffer.RelayBufferSize = yamlCfg.Buffer.RelayBufferSize
+	}
+	if yamlCfg.Buffer.ReadBufferSize > 0 {
+		cfg.Buffer.ReadBufferSize = yamlCfg.Buffer.ReadBufferSize
+	}
+	cfg.Buffer.EnableOptimizedBuffers = yamlCfg.Buffer.EnableOptimizedBuffers
+
 	// Load WebSocket config
 	cfg.WebSocket = DefaultWebSocketConfig()
 	if yamlCfg.WebSocket.Path != "" {
@@ -399,6 +440,16 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		cfg.Compression.MinSize = yamlCfg.Compression.MinSize
 	}
 	cfg.Compression.Enable = yamlCfg.Compression.Enable
+
+	// Load buffer config
+	cfg.Buffer = DefaultBufferConfig()
+	if yamlCfg.Buffer.RelayBufferSize > 0 {
+		cfg.Buffer.RelayBufferSize = yamlCfg.Buffer.RelayBufferSize
+	}
+	if yamlCfg.Buffer.ReadBufferSize > 0 {
+		cfg.Buffer.ReadBufferSize = yamlCfg.Buffer.ReadBufferSize
+	}
+	cfg.Buffer.EnableOptimizedBuffers = yamlCfg.Buffer.EnableOptimizedBuffers
 
 	// Load WebSocket config
 	cfg.WebSocket = DefaultWebSocketConfig()

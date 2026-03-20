@@ -9,8 +9,14 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Locon213/Mimic-Protocol/pkg/config"
 	"github.com/Locon213/Mimic-Protocol/pkg/routing"
 	"github.com/hashicorp/yamux"
+)
+
+const (
+	// Buffer sizes for relay operations - optimized for high-speed networks
+	socks5RelayBufferSize = 128 * 1024 // 128KB buffer for relay operations
 )
 
 // Stream type marker (first byte sent on yamux stream)
@@ -38,25 +44,27 @@ type Stats struct {
 
 // SOCKS5Server is a minimal local SOCKS5 proxy that tunnels through yamux
 type SOCKS5Server struct {
-	listener  net.Listener
-	session   *yamux.Session
-	router    *routing.Router
-	stats     *Stats
-	closeCh   chan struct{}
-	closeOnce sync.Once
+	listener     net.Listener
+	session      *yamux.Session
+	router       *routing.Router
+	stats        *Stats
+	closeCh      chan struct{}
+	closeOnce    sync.Once
+	bufferConfig *config.BufferConfig
 }
 
 // NewSOCKS5Server creates a new SOCKS5 proxy server
-func NewSOCKS5Server(bindAddr string, session *yamux.Session, router *routing.Router) (*SOCKS5Server, error) {
+func NewSOCKS5Server(bindAddr string, session *yamux.Session, router *routing.Router, bufferConfig *config.BufferConfig) (*SOCKS5Server, error) {
 	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
 		return nil, fmt.Errorf("socks5: bind failed: %w", err)
 	}
 
 	s := &SOCKS5Server{
-		listener: listener,
-		session:  session,
-		router:   router,
+		listener:     listener,
+		session:      session,
+		router:       router,
+		bufferConfig: bufferConfig,
 		stats: &Stats{
 			ConnectedAt: time.Now(),
 		},
@@ -224,14 +232,24 @@ func (s *SOCKS5Server) handleConn(conn net.Conn) {
 
 		var wg sync.WaitGroup
 		wg.Add(2)
+		// Get buffer size from config or use default
+		relayBufSize := socks5RelayBufferSize
+		if s.bufferConfig != nil && s.bufferConfig.EnableOptimizedBuffers {
+			relayBufSize = s.bufferConfig.RelayBufferSize
+		}
+
+		// Client -> Target with buffered copy
 		go func() {
 			defer wg.Done()
-			io.Copy(&trackingWriter{w: targetConn, counter: &s.stats.BytesUp}, conn)
+			buf := make([]byte, relayBufSize)
+			io.CopyBuffer(&trackingWriter{w: targetConn, counter: &s.stats.BytesUp}, conn, buf)
 			targetConn.Close()
 		}()
+		// Target -> Client with buffered copy
 		go func() {
 			defer wg.Done()
-			io.Copy(&trackingWriter{w: conn, counter: &s.stats.BytesDown}, targetConn)
+			buf := make([]byte, relayBufSize)
+			io.CopyBuffer(&trackingWriter{w: conn, counter: &s.stats.BytesDown}, targetConn, buf)
 			conn.Close()
 		}()
 		wg.Wait()
@@ -282,21 +300,29 @@ func (s *SOCKS5Server) handleConn(conn net.Conn) {
 
 	log.Printf("[SOCKS5] Tunnel established to %s", targetAddr)
 
-	// 7. Relay data bidirectionally
+	// 7. Relay data bidirectionally with buffered copy
 	var wg sync.WaitGroup
 	wg.Add(2)
 
-	// Client -> Server
+	// Get buffer size from config or use default
+	relayBufSize := socks5RelayBufferSize
+	if s.bufferConfig != nil && s.bufferConfig.EnableOptimizedBuffers {
+		relayBufSize = s.bufferConfig.RelayBufferSize
+	}
+
+	// Client -> Server with buffered copy
 	go func() {
 		defer wg.Done()
-		io.Copy(&trackingWriter{w: stream, counter: &s.stats.BytesUp}, conn)
+		buf := make([]byte, relayBufSize)
+		io.CopyBuffer(&trackingWriter{w: stream, counter: &s.stats.BytesUp}, conn, buf)
 		stream.Close()
 	}()
 
-	// Server -> Client
+	// Server -> Client with buffered copy
 	go func() {
 		defer wg.Done()
-		io.Copy(&trackingWriter{w: conn, counter: &s.stats.BytesDown}, stream)
+		buf := make([]byte, relayBufSize)
+		io.CopyBuffer(&trackingWriter{w: conn, counter: &s.stats.BytesDown}, stream, buf)
 		conn.Close()
 	}()
 

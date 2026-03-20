@@ -296,7 +296,7 @@ func (c *Client) StartProxies() error {
 		bindAddr := fmt.Sprintf("0.0.0.0:%d", pCfg.Port)
 		switch pCfg.Type {
 		case "socks5":
-			srv, err := proxy.NewSOCKS5Server(bindAddr, c.session, router)
+			srv, err := proxy.NewSOCKS5Server(bindAddr, c.session, router, &c.cfg.Buffer)
 			if err != nil {
 				return fmt.Errorf("failed to start SOCKS5 on %s: %w", bindAddr, err)
 			}
@@ -305,7 +305,7 @@ func (c *Client) StartProxies() error {
 			log.Printf("🚀 SOCKS5 proxy listening on %s", bindAddr)
 
 		case "http":
-			srv, err := proxy.NewHTTPProxyServer(bindAddr, c.session, router)
+			srv, err := proxy.NewHTTPProxyServer(bindAddr, c.session, router, &c.cfg.Buffer)
 			if err != nil {
 				return fmt.Errorf("failed to start HTTP proxy on %s: %w", bindAddr, err)
 			}

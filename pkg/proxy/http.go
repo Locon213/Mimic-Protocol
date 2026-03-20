@@ -11,31 +11,40 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Locon213/Mimic-Protocol/pkg/config"
 	"github.com/Locon213/Mimic-Protocol/pkg/routing"
 	"github.com/hashicorp/yamux"
 )
 
+const (
+	// Buffer sizes for relay operations - optimized for high-speed networks
+	relayBufferSize = 128 * 1024 // 128KB buffer for relay operations
+	readBufferSize  = 64 * 1024  // 64KB buffer for reading
+)
+
 // HTTPProxyServer implements a standard HTTP/HTTPS forward proxy
 type HTTPProxyServer struct {
-	listener  net.Listener
-	session   *yamux.Session
-	router    *routing.Router
-	stats     *Stats
-	closeCh   chan struct{}
-	closeOnce sync.Once
+	listener     net.Listener
+	session      *yamux.Session
+	router       *routing.Router
+	stats        *Stats
+	closeCh      chan struct{}
+	closeOnce    sync.Once
+	bufferConfig *config.BufferConfig
 }
 
 // NewHTTPProxyServer creates a local HTTP proxy server
-func NewHTTPProxyServer(bindAddr string, session *yamux.Session, router *routing.Router) (*HTTPProxyServer, error) {
+func NewHTTPProxyServer(bindAddr string, session *yamux.Session, router *routing.Router, bufferConfig *config.BufferConfig) (*HTTPProxyServer, error) {
 	listener, err := net.Listen("tcp", bindAddr)
 	if err != nil {
 		return nil, fmt.Errorf("http_proxy: bind failed: %w", err)
 	}
 
 	s := &HTTPProxyServer{
-		listener: listener,
-		session:  session,
-		router:   router,
+		listener:     listener,
+		session:      session,
+		router:       router,
+		bufferConfig: bufferConfig,
 		stats: &Stats{
 			ConnectedAt: time.Now(),
 		},
@@ -91,7 +100,14 @@ func (s *HTTPProxyServer) handleConn(conn net.Conn) {
 	// Log connection start for debugging
 	log.Printf("[HTTP] New connection from %s", conn.RemoteAddr())
 
-	reader := bufio.NewReader(conn)
+	// Get buffer size from config or use default
+	readBufSize := readBufferSize
+	if s.bufferConfig != nil && s.bufferConfig.EnableOptimizedBuffers {
+		readBufSize = s.bufferConfig.ReadBufferSize
+	}
+
+	// Use larger buffer for reading requests - optimized for high-speed networks
+	reader := bufio.NewReaderSize(conn, readBufSize)
 
 	// Connection loop for HTTP keep-alive support
 	for {
@@ -102,7 +118,8 @@ func (s *HTTPProxyServer) handleConn(conn net.Conn) {
 		}
 
 		// Set read deadline to prevent hanging on incomplete requests
-		conn.SetReadDeadline(time.Now().Add(30 * time.Second))
+		// Increased to 60 seconds for better handling of slow clients
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 		req, err := http.ReadRequest(reader)
 		if err != nil {
 			if err != io.EOF {
@@ -274,13 +291,22 @@ func (s *HTTPProxyServer) handleConn(conn net.Conn) {
 }
 
 // relay performs bidirectional data relay between two connections
+// OPTIMIZED: buffered relay for high-speed networks
 func (s *HTTPProxyServer) relay(client, target io.ReadWriteCloser) {
 	var wg sync.WaitGroup
 	wg.Add(2)
 
+	// Get buffer size from config or use default
+	relayBufSize := relayBufferSize
+	if s.bufferConfig != nil && s.bufferConfig.EnableOptimizedBuffers {
+		relayBufSize = s.bufferConfig.RelayBufferSize
+	}
+
+	// Client -> Target with buffered copy
 	go func() {
 		defer wg.Done()
-		io.Copy(&trackingWriter{w: target, counter: &s.stats.BytesUp}, client)
+		buf := make([]byte, relayBufSize)
+		io.CopyBuffer(&trackingWriter{w: target, counter: &s.stats.BytesUp}, client, buf)
 		if c, ok := target.(interface{ CloseWrite() error }); ok {
 			c.CloseWrite()
 		} else {
@@ -288,9 +314,11 @@ func (s *HTTPProxyServer) relay(client, target io.ReadWriteCloser) {
 		}
 	}()
 
+	// Target -> Client with buffered copy
 	go func() {
 		defer wg.Done()
-		io.Copy(&trackingWriter{w: client, counter: &s.stats.BytesDown}, target)
+		buf := make([]byte, relayBufSize)
+		io.CopyBuffer(&trackingWriter{w: client, counter: &s.stats.BytesDown}, target, buf)
 		if c, ok := client.(*net.TCPConn); ok {
 			c.CloseWrite()
 		} else {
@@ -302,13 +330,24 @@ func (s *HTTPProxyServer) relay(client, target io.ReadWriteCloser) {
 }
 
 // forwardHTTPResponse reads response from target and writes to client
+// OPTIMIZED: buffered response forwarding
 func (s *HTTPProxyServer) forwardHTTPResponse(client io.Writer, target io.Reader) {
-	reader := bufio.NewReader(target)
+	// Get buffer size from config or use default
+	readBufSize := readBufferSize
+	if s.bufferConfig != nil && s.bufferConfig.EnableOptimizedBuffers {
+		readBufSize = s.bufferConfig.ReadBufferSize
+	}
+
+	// Use larger buffer for reading response
+	reader := bufio.NewReaderSize(target, readBufSize)
 	resp, err := http.ReadResponse(reader, nil)
 	if err != nil {
 		log.Printf("[HTTP] Failed to read response: %v", err)
 		return
 	}
 
-	resp.Write(&trackingWriter{w: client, counter: &s.stats.BytesDown})
+	// Use buffered writer for better performance
+	bufWriter := bufio.NewWriterSize(client, readBufSize)
+	resp.Write(&trackingWriter{w: bufWriter, counter: &s.stats.BytesDown})
+	bufWriter.Flush()
 }
