@@ -44,9 +44,13 @@ func main() {
 			log.Printf("Warning: could not load config file: %v", err)
 			log.Println("Using default configuration for demo...")
 			cfg = &config.ClientConfig{
-				Server:  "localhost:8080",
-				UUID:    "demo-uuid-12345",
-				Domains: []string{"vk.com", "rutube.ru", "telegram.org"},
+				Server: "localhost:8080",
+				UUID:   "demo-uuid-12345",
+				Domains: []config.DomainEntry{
+					{Domain: "vk.com"},
+					{Domain: "rutube.ru"},
+					{Domain: "telegram.org"},
+				},
 				Settings: config.ClientSettings{
 					SwitchMin: 10 * time.Second,
 					SwitchMax: 30 * time.Second,

@@ -30,10 +30,28 @@ local_port: 1080
 # ───────────────────────────────────────────────────────────
 
 # Список доменов, под которые будет маскироваться трафик
+# Формат: domain (автоопределение пресета) или domain:preset (явное указание)
+#
+# Доступные пресеты:
+#   web_generic  - Веб-серфинг (по умолчанию)
+#   social       - Социальные сети (VK, Instagram, Facebook)
+#   video        - Видео стриминг (YouTube, Twitch, Netflix)
+#   messenger    - Мессенджеры (Telegram, WhatsApp, Signal)
+#   gaming       - Игры (CS2, Dota 2, Valorant)
+#   voip         - VoIP (Discord, Zoom, Skype)
+#
 domains:
-  - vk.com
-  - wikipedia.org
-  - telegram.org
+  # Автоопределение пресета по домену
+  - vk.com                    # Авто: social
+  - wikipedia.org             # Авто: web_generic
+  - telegram.org              # Авто: messenger
+  
+  # Явное указание пресета для конкретного домена
+  - domain: "some-gaming-site.com"
+    preset: "gaming"          # Игровой трафик для этого домена
+  
+  - domain: "my-video-site.com"
+    preset: "video"           # Видео стриминг для этого домена
 
 # ───────────────────────────────────────────────────────────
 # 🗜️ Сжатие данных (опционально)

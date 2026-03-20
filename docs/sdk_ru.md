@@ -51,14 +51,46 @@ mimicClient, _ := client.NewClient(cfg)
 
 ```go
 type ClientConfig struct {
-    Server    string         // Адрес сервера (IP:PORT)
-    UUID      string         // Уникальный идентификатор авторизации
-    Domains   []string       // Список доменов для маскировки
-    Transport string         // Тип транспорта: "mtp" (рекомендуется) или "tcp"
-    Proxies   []ProxyConfig  // Настройки локальных серверов (SOCKS5, HTTP)
-    DNS       string         // Свой кэширующий DNS-сервер (например, "1.1.1.1:53")
-    Settings  ClientSettings // Тонкие настройки генератора трафика
-    Routing   RoutingConfig  // Правила маршрутизации
+    Server        string                        // Адрес сервера (IP:PORT)
+    UUID          string                        // Уникальный идентификатор авторизации
+    Domains       []DomainEntry                 // Список доменов для маскировки (с опциональным пресетом)
+    Transport     string                        // Тип транспорта: "mtp" (рекомендуется) или "tcp"
+    Proxies       []ProxyConfig                 // Настройки локальных серверов (SOCKS5, HTTP)
+    DNS           string                        // Свой кэширующий DNS-сервер (например, "1.1.1.1:53")
+    Settings      ClientSettings                // Тонкие настройки генератора трафика
+    Routing       RoutingConfig                 // Правила маршрутизации
+    Compression   CompressionConfig             // Настройки сжатия данных
+    Android       AndroidConfig                 // Настройки для Android (TUN, VpnService)
+    CustomPresets map[string]CustomPresetConfig // Пользовательские пресеты трафика
+}
+
+// DomainEntry представляет домен с опциональным пресетом
+type DomainEntry struct {
+    Domain string // Имя домена
+    Preset string // Имя пресета (опционально, пусто = автоопределение)
+}
+```
+
+### Доступные пресеты
+
+Mimic SDK включает несколько встроенных пресетов для различных типов трафика:
+
+| Пресет | Описание | Примеры доменов |
+|--------|----------|-----------------|
+| `web_generic` | Веб-серфинг (по умолчанию) | wikipedia.org, dzen.ru |
+| `social` | Социальные сети | vk.com, instagram.com, facebook.com |
+| `video` | Видео стриминг | youtube.com, twitch.tv, netflix.com |
+| `messenger` | Мессенджеры | telegram.org, whatsapp.com, signal.org |
+| `gaming` | Игры | steampowered.com, epicgames.com |
+| `voip` | VoIP сервисы | discord.com, zoom.us, skype.com |
+
+Вы можете указать пресет явно для конкретного домена:
+```go
+Domains: []config.DomainEntry{
+    {Domain: "vk.com", Preset: "social"},           // Явное указание пресета
+    {Domain: "youtube.com", Preset: "video"},        // Явное указание пресета
+    {Domain: "wikipedia.org"},                        // Автоопределение пресета
+    {Domain: "some-gaming-site.com", Preset: "gaming"}, // Игровой трафик
 }
 ```
 
@@ -121,7 +153,11 @@ func main() {
 	cfg := &config.ClientConfig{
 		Server:    "12.34.56.78:443", // Замените на ваш сервер
 		UUID:      "12345678-1234-1234-1234-1234567890ab",
-		Domains:   []string{"vk.com", "yandex.ru"},
+		Domains: []config.DomainEntry{
+			{Domain: "vk.com", Preset: "social"},      // Явное указание пресета
+			{Domain: "yandex.ru"},                       // Автоопределение пресета
+			{Domain: "some-gaming-site.com", Preset: "gaming"}, // Игровой трафик
+		},
 		Transport: "mtp",
 		DNS:       "8.8.8.8:53",
 		Settings: config.ClientSettings{
@@ -136,6 +172,11 @@ func main() {
 			Rules: []config.RoutingRule{
 				{Type: "domain_suffix", Value: "ru", Policy: "direct"},
 			},
+		},
+		Compression: config.CompressionConfig{
+			Enable:  true,   // Включить сжатие
+			Level:   2,      // Уровень сжатия (1-3)
+			MinSize: 64,     // Минимальный размер для сжатия
 		},
 	}
 
@@ -189,13 +230,18 @@ func (v *VpnService) StartService(serverIp string, uuid string) error {
     cfg := &config.ClientConfig{
         Server: serverIp,
         UUID: uuid,
-        Domains: []string{"example.com"},
+        Domains: []config.DomainEntry{
+            {Domain: "example.com"}, // Автоопределение пресета
+        },
         Transport: "mtp", // MTP использует UDP BBR
         DNS: "1.1.1.1:53", // Рекомендуется для обхода локальных DNS-утечек
         Proxies: []config.ProxyConfig{
 			{Type: "socks5", Port: 1080},
 			{Type: "http", Port: 1081}, // Удобно для системного прокси
 		},
+        Compression: config.CompressionConfig{
+            Enable: true, // Включить сжатие для экономии трафика
+        },
     }
     
     var err error

@@ -115,7 +115,7 @@ nano server.yaml  # edit for your needs
 | `uuid` | string | ✅ | Unique UUID for client authentication | `"550e8400-e29b-41d4-a716-446655440000"` |
 | `name` | string | ❌ | Server name (shown in logs and links) | `"My-Mimic-Server"` |
 | `transport` | string | ❌ | Transport type: `"mtp"` (UDP, recommended) or `"tcp"` (legacy) | `"mtp"` |
-| `domain_list` | []string | ❌ | Domains for traffic mimicry | `["vk.com", "rutube.ru"]` |
+| `domain_list` | []object | ❌ | Domains for traffic mimicry (with optional preset) | `[{"domain": "vk.com", "preset": "social"}]` |
 | `max_clients` | int | ❌ | Maximum concurrent clients. `0` = unlimited | `100` |
 | `dns` | string | ❌ | DNS server for domain resolution | `"1.1.1.1:53"` |
 | `compression.enable` | bool | ❌ | Enable zstd compression. Default: `false` | `true`, `false` |
@@ -135,12 +135,21 @@ name: "My-Mimic-Server"
 # Transport: "mtp" (UDP, recommended) or "tcp" (legacy)
 transport: "mtp"
 
-# Domains for traffic mimicry
+# Domains for traffic mimicry (with optional preset)
+# Format: domain (auto-detect) or domain:preset (explicit)
 domain_list:
-  - vk.com
-  - rutube.ru
-  - telegram.org
-  - wikipedia.org
+  # Auto-detect preset by domain
+  - vk.com                    # Auto: social
+  - rutube.ru                 # Auto: video
+  - telegram.org              # Auto: messenger
+  - wikipedia.org             # Auto: web_generic
+  
+  # Explicit preset for specific domain
+  - domain: "some-gaming-site.com"
+    preset: "gaming"          # Gaming traffic for this domain
+  
+  - domain: "my-video-site.com"
+    preset: "video"           # Video streaming for this domain
 
 # Max clients (0 = unlimited)
 max_clients: 100
@@ -181,7 +190,7 @@ mimic://550e8400-e29b-41d4-a716-446655440000@your-server.com:443?name=My-Mimic-S
 |-----------|------|----------|-------------|---------|
 | `server` | string | ✅ | Server address (IP:PORT or domain:PORT) | `"192.168.1.100:443"` |
 | `uuid` | string | ✅ | UUID for authentication (must match server) | `"550e8400-e29b-41d4-a716-446655440000"` |
-| `domains` | []string | ❌ | Domains for mimicry | `["vk.com", "telegram.org"]` |
+| `domains` | []object | ❌ | Domains for mimicry (with optional preset) | `[{"domain": "vk.com", "preset": "social"}]` |
 | `transport` | string | ❌ | Transport type: `"mtp"` or `"tcp"` | `"mtp"` |
 | `local_port` | int | ❌ | Local SOCKS5 proxy port. Default: `1080` | `1080` |
 | `dns` | string | ❌ | DNS server for resolution | `"1.1.1.1:53"` |
@@ -253,6 +262,21 @@ server: "your-mimic-server.com:443"
 uuid: "550e8400-e29b-41d4-a716-446655440000"
 local_port: 1080
 
+# Domains for mimicry (with optional preset)
+# Format: domain (auto-detect) or domain:preset (explicit)
+domains:
+  # Auto-detect preset by domain
+  - vk.com                    # Auto: social
+  - rutube.ru                 # Auto: video
+  - telegram.org              # Auto: messenger
+  
+  # Explicit preset for specific domain
+  - domain: "some-gaming-site.com"
+    preset: "gaming"          # Gaming traffic for this domain
+  
+  - domain: "my-video-site.com"
+    preset: "video"           # Video streaming for this domain
+
 # Data compression (optional)
 compression:
   enable: false  # true = enable zstd compression
@@ -267,11 +291,6 @@ custom_presets:
     packet_size_max: 300
     packets_per_sec_min: 20
     packets_per_sec_max: 50
-
-domains:
-  - vk.com          # Preset "social"
-  - rutube.ru       # Preset "video"
-  - telegram.org    # Preset "messenger"
 
 # Routing Engine (Optional)
 routing:

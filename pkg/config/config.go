@@ -8,11 +8,17 @@ import (
 	"github.com/goccy/go-yaml"
 )
 
+// DomainEntry represents a domain with optional preset
+type DomainEntry struct {
+	Domain string `yaml:"domain" json:"domain"` // Domain name
+	Preset string `yaml:"preset" json:"preset"` // Preset name (optional, empty = auto-detect)
+}
+
 // ClientConfig represents the client configuration
 type ClientConfig struct {
 	Server        string                        // Server address (IP:PORT)
 	UUID          string                        // Unique authorization identifier
-	Domains       []string                      // List of domains for masking
+	Domains       []DomainEntry                 // List of domains for masking (with optional preset)
 	Transport     string                        // Transport type: "mtp" or "tcp"
 	Proxies       []ProxyConfig                 // Local proxy server settings
 	DNS           string                        // Custom DNS server
@@ -85,7 +91,7 @@ type ServerConfig struct {
 	Port        int               // Listening port
 	MaxClients  int               // Maximum number of clients
 	UUID        string            // Server UUID for authentication
-	DomainList  []string          // List of domains for masking
+	DomainList  []DomainEntry     // List of domains for masking (with optional preset)
 	Transport   string            // Transport type: "mtp" or "tcp"
 	DNS         string            // DNS server
 	Name        string            // Server name
@@ -121,13 +127,16 @@ type RoutingRule struct {
 
 // clientYAMLConfig represents the raw YAML client config structure
 type clientYAMLConfig struct {
-	Server    string   `yaml:"server"`
-	UUID      string   `yaml:"uuid"`
-	Transport string   `yaml:"transport"`
-	LocalPort int      `yaml:"local_port"`
-	DNS       string   `yaml:"dns"`
-	Domains   []string `yaml:"domains"`
-	Proxies   []struct {
+	Server    string `yaml:"server"`
+	UUID      string `yaml:"uuid"`
+	Transport string `yaml:"transport"`
+	LocalPort int    `yaml:"local_port"`
+	DNS       string `yaml:"dns"`
+	Domains   []struct {
+		Domain string `yaml:"domain"`
+		Preset string `yaml:"preset,omitempty"`
+	} `yaml:"domains"`
+	Proxies []struct {
 		Type string `yaml:"type"`
 		Port int    `yaml:"port"`
 	} `yaml:"proxies"`
@@ -172,13 +181,16 @@ type clientYAMLConfig struct {
 
 // serverYAMLConfig represents the raw YAML server config structure
 type serverYAMLConfig struct {
-	Port        int      `yaml:"port"`
-	UUID        string   `yaml:"uuid"`
-	Transport   string   `yaml:"transport"`
-	DNS         string   `yaml:"dns"`
-	MaxClients  int      `yaml:"max_clients"`
-	DomainList  []string `yaml:"domain_list"`
-	Name        string   `yaml:"name"`
+	Port       int    `yaml:"port"`
+	UUID       string `yaml:"uuid"`
+	Transport  string `yaml:"transport"`
+	DNS        string `yaml:"dns"`
+	MaxClients int    `yaml:"max_clients"`
+	DomainList []struct {
+		Domain string `yaml:"domain"`
+		Preset string `yaml:"preset,omitempty"`
+	} `yaml:"domain_list"`
+	Name        string `yaml:"name"`
 	Compression struct {
 		Enable  bool `yaml:"enable"`
 		Level   int  `yaml:"level"`
@@ -203,7 +215,7 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 		UUID:      yamlCfg.UUID,
 		Transport: yamlCfg.Transport,
 		DNS:       yamlCfg.DNS,
-		Domains:   yamlCfg.Domains,
+		Domains:   make([]DomainEntry, len(yamlCfg.Domains)),
 		LocalPort: yamlCfg.LocalPort,
 		Settings: ClientSettings{
 			SwitchTimeRangeStr: yamlCfg.Settings.SwitchTime,
@@ -215,6 +227,14 @@ func LoadClientConfig(path string) (*ClientConfig, error) {
 		Routing: RoutingConfig{
 			DefaultPolicy: "proxy",
 		},
+	}
+
+	// Convert domains from YAML format
+	for i, d := range yamlCfg.Domains {
+		cfg.Domains[i] = DomainEntry{
+			Domain: d.Domain,
+			Preset: d.Preset,
+		}
 	}
 
 	// Load proxies из конфига (если указаны)
@@ -325,7 +345,7 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		Transport:  yamlCfg.Transport,
 		DNS:        yamlCfg.DNS,
 		MaxClients: yamlCfg.MaxClients,
-		DomainList: yamlCfg.DomainList,
+		DomainList: make([]DomainEntry, len(yamlCfg.DomainList)),
 		Name:       yamlCfg.Name,
 	}
 
@@ -338,6 +358,14 @@ func LoadServerConfig(path string) (*ServerConfig, error) {
 		cfg.Compression.MinSize = yamlCfg.Compression.MinSize
 	}
 	cfg.Compression.Enable = yamlCfg.Compression.Enable
+
+	// Convert domain_list from YAML format
+	for i, d := range yamlCfg.DomainList {
+		cfg.DomainList[i] = DomainEntry{
+			Domain: d.Domain,
+			Preset: d.Preset,
+		}
+	}
 
 	// Set default values
 	if cfg.Port == 0 {

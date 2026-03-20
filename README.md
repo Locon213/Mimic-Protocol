@@ -117,7 +117,7 @@ nano server.yaml  # отредактируйте под себя (удалите
 | `uuid` | string | ✅ | Уникальный UUID для аутентификации клиентов | `"550e8400-e29b-41d4-a716-446655440000"` |
 | `name` | string | ❌ | Название сервера (отображается в логах и ссылках) | `"My-Mimic-Server"` |
 | `transport` | string | ❌ | Тип транспорта: `"mtp"` (UDP, рекомендуется) или `"tcp"` (устаревший) | `"mtp"` |
-| `domain_list` | []string | ❌ | Список доменов для мимикрии трафика | `["vk.com", "rutube.ru"]` |
+| `domain_list` | []object | ❌ | Список доменов для мимикрии трафика (с опциональным пресетом) | `[{"domain": "vk.com", "preset": "social"}]` |
 | `max_clients` | int | ❌ | Максимум одновременных клиентов. `0` = без ограничений | `100` |
 | `dns` | string | ❌ | DNS-сервер для резолвинга доменов | `"1.1.1.1:53"` |
 | `compression.enable` | bool | ❌ | Включить сжатие zstd. По умолчанию: `false` | `true`, `false` |
@@ -131,10 +131,22 @@ port: 443
 uuid: "550e8400-e29b-41d4-a716-446655440000"
 name: "My-Mimic-Server"
 transport: "mtp"
+
+# Домены для мимикрии (с опциональным пресетом)
+# Формат: domain (автоопределение) или domain:preset (явное указание)
 domain_list:
-  - vk.com
-  - rutube.ru
-  - telegram.org
+  # Автоопределение пресета по домену
+  - vk.com                    # Авто: social
+  - rutube.ru                 # Авто: video
+  - telegram.org              # Авто: messenger
+  
+  # Явное указание пресета для конкретного домена
+  - domain: "some-gaming-site.com"
+    preset: "gaming"          # Игровой трафик для этого домена
+  
+  - domain: "my-video-site.com"
+    preset: "video"           # Видео стриминг для этого домена
+
 max_clients: 100
 dns: "1.1.1.1:53"
 
@@ -174,7 +186,7 @@ mimic://550e8400-e29b-41d4-a716-446655440000@your-server.com:443?name=My-Mimic-S
 |----------|-----|--------------|----------|--------|
 | `server` | string | ✅ | Адрес сервера (IP:PORT или домен:PORT) | `"192.168.1.100:443"` |
 | `uuid` | string | ✅ | UUID для аутентификации (должен совпадать с сервером) | `"550e8400-e29b-41d4-a716-446655440000"` |
-| `domains` | []string | ❌ | Список доменов для мимикрии | `["vk.com", "telegram.org"]` |
+| `domains` | []object | ❌ | Список доменов для мимикрии (с опциональным пресетом) | `[{"domain": "vk.com", "preset": "social"}]` |
 | `transport` | string | ❌ | Тип транспорта: `"mtp"` или `"tcp"` | `"mtp"` |
 | `local_port` | int | ❌ | Порт локального SOCKS5 прокси. По умолчанию: `1080` | `1080` |
 | `dns` | string | ❌ | DNS-сервер для резолвинга | `"1.1.1.1:53"` |
@@ -303,10 +315,22 @@ routing:
 server: "your-mimic-server.com:443"
 uuid: "550e8400-e29b-41d4-a716-446655440000"
 local_port: 1080
+
+# Домены для мимикрии (с опциональным пресетом)
+# Формат: domain (автоопределение) или domain:preset (явное указание)
 domains:
-  - vk.com
-  - rutube.ru
-  - telegram.org
+  # Автоопределение пресета по домену
+  - vk.com                    # Авто: social
+  - rutube.ru                 # Авто: video
+  - telegram.org              # Авто: messenger
+  
+  # Явное указание пресета для конкретного домена
+  - domain: "some-gaming-site.com"
+    preset: "gaming"          # Игровой трафик для этого домена
+  
+  - domain: "my-video-site.com"
+    preset: "video"           # Видео стриминг для этого домена
+
 transport: "mtp"
 dns: "1.1.1.1:53"
 

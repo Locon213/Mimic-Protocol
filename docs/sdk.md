@@ -55,9 +55,10 @@ func main() {
 	cfg := &config.ClientConfig{
 		Server: "your-server-ip:443", // The remote MTP server
 		UUID:   "your-uuid-here",
-		Domains: []string{
-			"vk.com", 
-			"rutube.ru",
+		Domains: []config.DomainEntry{
+			{Domain: "vk.com", Preset: "social"},      // Explicit preset
+			{Domain: "rutube.ru"},                       // Auto-detect preset
+			{Domain: "some-gaming-site.com", Preset: "gaming"}, // Gaming traffic
 		},
 		Settings: config.ClientSettings{
 			// Rotate the disguise domain every 60-300 seconds
@@ -78,6 +79,13 @@ func main() {
 			Rules: []config.RoutingRule{
 				{Type: "domain_suffix", Value: "ru", Policy: "direct"},
 			},
+		},
+		
+		// Optional: Enable compression
+		Compression: config.CompressionConfig{
+			Enable:  true,   // Enable compression
+			Level:   2,      // Compression level (1-3)
+			MinSize: 64,     // Minimum size for compression
 		},
 	}
 

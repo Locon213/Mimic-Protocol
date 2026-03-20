@@ -41,12 +41,34 @@ transport: "mtp"
 
 # Домены, под которые будет маскироваться трафик
 # Сервер выбирает случайный домен из списка при переключении профиля
+#
+# Формат: domain (автоопределение пресета) или domain:preset (явное указание)
+#
+# Доступные пресеты:
+#   web_generic  - Веб-серфинг (по умолчанию)
+#   social       - Социальные сети (VK, Instagram, Facebook)
+#   video        - Видео стриминг (YouTube, Twitch, Netflix)
+#   messenger    - Мессенджеры (Telegram, WhatsApp, Signal)
+#   gaming       - Игры (CS2, Dota 2, Valorant)
+#   voip         - VoIP (Discord, Zoom, Skype)
+#
 domain_list:
-  - vk.com          # Social Network behavior
-  - rutube.ru       # Video Streaming behavior
-  - telegram.org    # Messenger behavior
-  - wikipedia.org   # General Web behavior
-  - dzen.ru         # Content Platform behavior
+  # Автоопределение пресета по домену
+  - vk.com                    # Авто: social
+  - rutube.ru                 # Авто: video
+  - telegram.org              # Авто: messenger
+  - wikipedia.org             # Авто: web_generic
+  - dzen.ru                   # Авто: web_generic
+  
+  # Явное указание пресета для конкретного домена
+  - domain: "some-gaming-site.com"
+    preset: "gaming"          # Игровой трафик для этого домена
+  
+  - domain: "my-video-site.com"
+    preset: "video"           # Видео стриминг для этого домена
+  
+  - domain: "my-voip-app.com"
+    preset: "voip"            # VoIP для этого домена
 
 # ───────────────────────────────────────────────────────────
 # 🗜️ Сжатие данных (опционально)
