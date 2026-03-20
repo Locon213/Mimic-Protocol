@@ -7,24 +7,24 @@ import (
 	"time"
 )
 
-// ARQ engine constants - OPTIMIZED for performance
+// ARQ engine constants - OPTIMIZED for high-speed networks (100 Mbps+)
 const (
-	DefaultWindowSize     = 128                    // Увеличено с 64 до 128
-	MaxWindowSize         = 512                    // Увеличено с 256 до 512
-	InitialRTO            = 200 * time.Millisecond // Уменьшено с 500ms до 200ms
-	MinRTO                = 20 * time.Millisecond  // Уменьшено с 100ms до 20ms (для плохих сетей)
-	MaxRTO                = 10 * time.Second
-	MaxRetransmissions    = 10
-	DuplicateACKThreshold = 3
+	DefaultWindowSize     = 512                    // Увеличено для быстрого старта
+	MaxWindowSize         = 2048                   // Увеличено для гигабитных сетей
+	InitialRTO            = 100 * time.Millisecond // Уменьшено для быстрой реакции
+	MinRTO                = 10 * time.Millisecond  // Минимальный RTO для локальных сетей
+	MaxRTO                = 5 * time.Second        // Уменьшено для быстрого восстановления
+	MaxRetransmissions    = 8                      // Уменьшено для быстрого отказа
+	DuplicateACKThreshold = 2                      // Уменьшено для быстрой детекции потерь
 
-	// BBR parameters
-	BBRGain = 1.25 // Более агрессивный gain (было 1.5)
+	// BBR parameters - more aggressive for high-speed
+	BBRGain = 1.5 // Более агрессивный gain для высоких скоростей
 
-	// FEC адаптивные параметры
-	FECMinDataShards   = 8
-	FECMaxDataShards   = 16
-	FECMinParityShards = 2
-	FECMaxParityShards = 4
+	// FEC адаптивные параметры - optimized
+	FECMinDataShards   = 16 // Увеличено для лучшего соотношения
+	FECMaxDataShards   = 32 // Увеличено
+	FECMinParityShards = 2  // Минимум parity
+	FECMaxParityShards = 4  // Максимум parity
 )
 
 // FECConfig - адаптивная конфигурация FEC
@@ -46,6 +46,7 @@ func NewFECConfig() *FECConfig {
 }
 
 // Adjust адаптирует параметры FEC на основе потерь
+// OPTIMIZED: reduced overhead for high-speed networks
 func (c *FECConfig) Adjust(packetLoss float64) {
 	c.PacketLoss = packetLoss
 
@@ -54,18 +55,23 @@ func (c *FECConfig) Adjust(packetLoss float64) {
 	}
 
 	// Адаптивный выбор параметров на основе потерь
-	if packetLoss < 0.01 {
+	// Оптимизировано для высокоскоростных сетей (100 Mbps+)
+	if packetLoss < 0.005 {
+		// Отличная сеть: минимальный оверхед или отключить FEC
+		c.DataShards = 32
+		c.ParityShards = 1 // 3% оверхед (было 11%)
+	} else if packetLoss < 0.02 {
 		// Хорошая сеть: минимальный оверхед
-		c.DataShards = 16
-		c.ParityShards = 2 // 11% оверхед
+		c.DataShards = 24
+		c.ParityShards = 2 // 8% оверхед (было 11%)
 	} else if packetLoss < 0.05 {
 		// Средняя сеть
-		c.DataShards = 12
-		c.ParityShards = 3 // 20% оверхед
+		c.DataShards = 16
+		c.ParityShards = 2 // 11% оверхед (было 20%)
 	} else if packetLoss < 0.10 {
 		// Плохая сеть
-		c.DataShards = 8
-		c.ParityShards = 3 // 27% оверхед
+		c.DataShards = 12
+		c.ParityShards = 3 // 20% оверхед (было 27%)
 	} else {
 		// Очень плохая сеть: максимальная коррекция
 		c.DataShards = 8
@@ -84,8 +90,12 @@ type inflight struct {
 }
 
 // ARQEngine manages reliable delivery over unreliable UDP
+// OPTIMIZED: split locks for better concurrency
 type ARQEngine struct {
-	mu sync.Mutex
+	// Split locks for better concurrency
+	sendMu  sync.RWMutex // Protects send state
+	recvMu  sync.RWMutex // Protects receive state
+	statsMu sync.RWMutex // Protects statistics
 
 	// Send state
 	sendSeq    uint32               // Next sequence number to assign
@@ -148,8 +158,8 @@ type ARQEngine struct {
 // NewARQEngine creates a new ARQ engine with optimized parameters
 func NewARQEngine(codec *PacketCodec, sendFunc func([]byte) error, deliverBufSize int) *ARQEngine {
 	arq := &ARQEngine{
-		sendWindow: 32,  // Увеличено с 2 до 32 для быстрого старта
-		ssthresh:   256, // Увеличено с 64 до 256
+		sendWindow: 256,  // Увеличено для быстрого старта (было 32)
+		ssthresh:   1024, // Увеличено для высоких скоростей (было 256)
 		unacked:    make(map[uint32]*inflight),
 		recvBuf:    make(map[uint32]*Packet),
 		delivered:  make(chan *Packet, deliverBufSize),
@@ -161,8 +171,8 @@ func NewARQEngine(codec *PacketCodec, sendFunc func([]byte) error, deliverBufSiz
 		fecConfig:  NewFECConfig(),
 	}
 
-	// Initialize pacer: 1000 packets/sec, burst 32
-	arq.pacer = NewPacer(1000, 32)
+	// Initialize pacer: 10000 packets/sec, burst 64 (optimized for high-speed networks)
+	arq.pacer = NewPacer(10000, 64)
 
 	enc, _ := NewFecEncoder(func(startSeq uint32, parityIdx uint8, payload []byte) {
 		pkt := &Packet{
@@ -192,24 +202,25 @@ func NewARQEngine(codec *PacketCodec, sendFunc func([]byte) error, deliverBufSiz
 }
 
 // Send queues a DATA packet for reliable delivery with pacing
+// OPTIMIZED: split locks for better concurrency
 func (a *ARQEngine) Send(payload []byte) error {
-	a.mu.Lock()
+	a.sendMu.Lock()
 	if a.closed {
-		a.mu.Unlock()
+		a.sendMu.Unlock()
 		return fmt.Errorf("mtp: arq engine closed")
 	}
 
 	// Wait for window space using condition variable approach
 	for len(a.unacked) >= a.sendWindow {
-		a.mu.Unlock()
+		a.sendMu.Unlock()
 		select {
 		case <-a.closeCh:
 			return fmt.Errorf("mtp: arq engine closed")
-		case <-time.After(2 * time.Millisecond): // Уменьшено с 5ms до 2ms
+		case <-time.After(1 * time.Millisecond): // Уменьшено до 1ms для быстрой реакции
 		}
-		a.mu.Lock()
+		a.sendMu.Lock()
 		if a.closed {
-			a.mu.Unlock()
+			a.sendMu.Unlock()
 			return fmt.Errorf("mtp: arq engine closed")
 		}
 	}
@@ -226,7 +237,7 @@ func (a *ARQEngine) Send(payload []byte) error {
 
 	encoded, err := a.codec.Encode(pkt)
 	if err != nil {
-		a.mu.Unlock()
+		a.sendMu.Unlock()
 		return fmt.Errorf("mtp: encode failed: %w", err)
 	}
 
@@ -239,10 +250,15 @@ func (a *ARQEngine) Send(payload []byte) error {
 	}
 
 	a.unacked[seq] = inf
+
+	// Update stats with separate lock
+	a.statsMu.Lock()
 	a.totalPacketsSent++
 	a.packetsSent++
 	a.totalBytesSent += uint64(len(encoded))
-	a.mu.Unlock()
+	a.statsMu.Unlock()
+
+	a.sendMu.Unlock()
 
 	// Add to FEC encoder
 	a.fecEnc.AddDataPacket(seq, payload)
@@ -256,13 +272,13 @@ func (a *ARQEngine) Send(payload []byte) error {
 	}
 
 	// Start retransmission timer
-	a.mu.Lock()
+	a.sendMu.Lock()
 	if inf2, ok := a.unacked[seq]; ok {
 		inf2.retransmit = time.AfterFunc(a.rto, func() {
 			a.retransmitPacket(seq)
 		})
 	}
-	a.mu.Unlock()
+	a.sendMu.Unlock()
 
 	return nil
 }
@@ -277,25 +293,32 @@ func (a *ARQEngine) SendControl(pkt *Packet) error {
 }
 
 // HandlePacket processes a received packet
+// OPTIMIZED: split locks for better concurrency
 func (a *ARQEngine) HandlePacket(pkt *Packet) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	if a.closed {
 		return
 	}
 
+	// Update stats with separate lock
+	a.statsMu.Lock()
 	a.totalPacketsRecv++
 	a.totalBytesRecv += uint64(len(pkt.Payload))
+	a.statsMu.Unlock()
 
 	switch pkt.Type {
 	case PacketACK:
+		a.sendMu.Lock()
 		a.handleACK(pkt)
+		a.sendMu.Unlock()
 	case PacketDATA:
+		a.recvMu.Lock()
 		a.fecDec.AddData(pkt.SeqNum, pkt.Payload)
 		a.handleDATA(pkt)
+		a.recvMu.Unlock()
 	case PacketFEC:
+		a.recvMu.Lock()
 		a.fecDec.AddParity(pkt.SeqNum, pkt.Flags, append([]byte(nil), pkt.Payload...))
+		a.recvMu.Unlock()
 	}
 }
 
@@ -338,24 +361,28 @@ func (a *ARQEngine) handleACK(pkt *Packet) {
 		a.fecConfig.Adjust(lossRate)
 	}
 
-	// BBR congestion control
+	// BBR congestion control - optimized for high-speed
 	if a.minRTT > 0 && a.btlBw > 0 {
 		// BDP (Bytes) = Bottleneck Bandwidth * Min RTT
 		bdpBytes := a.btlBw * float64(a.minRTT.Nanoseconds())
 		targetWindow := int((bdpBytes / 1000.0) * BBRGain)
 
-		if targetWindow < 8 {
-			targetWindow = 8
+		if targetWindow < 16 {
+			targetWindow = 16 // Увеличено минимальное окно
 		}
 		if targetWindow > MaxWindowSize {
 			targetWindow = MaxWindowSize
 		}
 
-		// Smooth adjustment
+		// More aggressive adjustment for high-speed networks
 		if a.sendWindow < targetWindow {
-			a.sendWindow++
+			// Быстрое увеличение: +10% или +16 пакетов
+			increase := max(a.sendWindow/10, 16)
+			a.sendWindow = min(a.sendWindow+increase, MaxWindowSize)
 		} else if a.sendWindow > targetWindow {
-			a.sendWindow--
+			// Медленное уменьшение: -5% или -8 пакетов
+			decrease := max(a.sendWindow/20, 8)
+			a.sendWindow = max(a.sendWindow-decrease, 16)
 		}
 	} else {
 		// Slow start
@@ -463,9 +490,10 @@ func (a *ARQEngine) sendACK() {
 }
 
 // retransmitPacket handles retransmission with improved congestion control
+// OPTIMIZED: split locks for better concurrency
 func (a *ARQEngine) retransmitPacket(seq uint32) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
 
 	if a.closed {
 		return
@@ -482,14 +510,17 @@ func (a *ARQEngine) retransmitPacket(seq uint32) {
 		return
 	}
 
-	// BBR: более мягкое уменьшение окна (20% вместо 50%)
-	a.ssthresh = max(a.sendWindow*4/5, 8)
+	// BBR: более мягкое уменьшение окна (15% вместо 20%)
+	a.ssthresh = max(a.sendWindow*85/100, 16)
 	a.sendWindow = a.ssthresh
 
 	// Exponential backoff on RTO
 	a.rto = time.Duration(math.Min(float64(a.rto*2), float64(MaxRTO)))
 
+	// Update stats with separate lock
+	a.statsMu.Lock()
 	a.totalRetransmissions++
+	a.statsMu.Unlock()
 
 	// Re-encode with fresh padding (polymorphic!)
 	encoded, err := a.codec.Encode(inf.pkt)
@@ -529,30 +560,30 @@ func (a *ARQEngine) updateRTT(rtt time.Duration) {
 	}
 }
 
-// updatePacing adjusts pacing rate based on current bandwidth
+// updatePacing adjusts pacing rate based on current bandwidth - optimized for high-speed
 func (a *ARQEngine) updatePacing() {
 	if a.btlBw > 0 && a.minRTT > 0 {
 		// packets per second = bandwidth / avg packet size
-		avgPacketSize := 1000.0 // bytes
+		avgPacketSize := 1200.0 // bytes (updated to match MaxPayloadSize)
 		rate := int((a.btlBw * 1e9) / avgPacketSize)
 
-		// Limit rate
-		if rate < 100 {
-			rate = 100
+		// Limit rate - increased for high-speed networks
+		if rate < 1000 {
+			rate = 1000
 		}
-		if rate > 10000 {
-			rate = 10000
+		if rate > 50000 { // Увеличено до 50k pps для гигабитных сетей
+			rate = 50000
 		}
 
 		a.pacer.SetRate(rate)
 
-		// Burst size based on BDP
+		// Burst size based on BDP - more aggressive
 		bdp := int((a.btlBw * float64(a.minRTT.Nanoseconds())) / avgPacketSize)
-		if bdp < 4 {
-			bdp = 4
+		if bdp < 8 {
+			bdp = 8
 		}
-		if bdp > 64 {
-			bdp = 64
+		if bdp > 128 { // Увеличено для высоких скоростей
+			bdp = 128
 		}
 		a.pacer.SetBurst(bdp)
 	}
@@ -564,9 +595,10 @@ func (a *ARQEngine) Delivered() <-chan *Packet {
 }
 
 // Close stops the ARQ engine
+// OPTIMIZED: split locks for better concurrency
 func (a *ARQEngine) Close() {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
 
 	if a.closed {
 		return
@@ -583,20 +615,34 @@ func (a *ARQEngine) Close() {
 }
 
 // Stats returns current engine statistics
+// OPTIMIZED: split locks for better concurrency
 func (a *ARQEngine) Stats() (sent, recv, retransmissions uint64, window int, rto time.Duration) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	return a.totalPacketsSent, a.totalPacketsRecv, a.totalRetransmissions, a.sendWindow, a.rto
+	a.statsMu.RLock()
+	sent = a.totalPacketsSent
+	recv = a.totalPacketsRecv
+	retransmissions = a.totalRetransmissions
+	a.statsMu.RUnlock()
+
+	a.sendMu.RLock()
+	window = a.sendWindow
+	rto = a.rto
+	a.sendMu.RUnlock()
+
+	return
 }
 
 // GetLossRate returns current packet loss rate
+// OPTIMIZED: split locks for better concurrency
 func (a *ARQEngine) GetLossRate() float64 {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.packetsSent == 0 {
+	a.statsMu.RLock()
+	packetsSent := a.packetsSent
+	packetsLost := a.packetsLost
+	a.statsMu.RUnlock()
+
+	if packetsSent == 0 {
 		return 0.0
 	}
-	return float64(a.packetsLost) / float64(a.packetsSent)
+	return float64(packetsLost) / float64(packetsSent)
 }
 
 // GetFECConfig returns current FEC configuration
@@ -605,9 +651,10 @@ func (a *ARQEngine) GetFECConfig() *FECConfig {
 }
 
 // SetFECConfig updates FEC configuration
+// OPTIMIZED: split locks for better concurrency
 func (a *ARQEngine) SetFECConfig(config *FECConfig) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
+	a.sendMu.Lock()
+	defer a.sendMu.Unlock()
 	a.fecConfig = config
 	a.fecEnc.Reconfigure(config)
 }

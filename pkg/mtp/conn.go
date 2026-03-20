@@ -71,8 +71,8 @@ func newMTPConn(udpConn *net.UDPConn, remoteAddr *net.UDPAddr, secret string, is
 	c.lastRecv.Store(time.Now().UnixNano())
 	c.lastSend.Store(time.Now().UnixNano())
 
-	// Initialize ARQ engine
-	c.arq = NewARQEngine(codec, c.sendRaw, 256)
+	// Initialize ARQ engine - increased buffer for high-speed networks
+	c.arq = NewARQEngine(codec, c.sendRaw, 4096)
 
 	return c
 }
@@ -123,13 +123,26 @@ func (c *MTPConn) recvLoop() {
 }
 
 // recvLoopDirect is used by client-side connections that own their UDPConn
+// OPTIMIZED: batch processing for high-speed networks
 func (c *MTPConn) recvLoopDirect() {
 	buf := make([]byte, 65535)
+	// Batch processing buffer
+	batchBuf := make([][]byte, 0, 32)
+	batchSizes := make([]int, 0, 32)
+
 	for {
 		if c.closed.Load() {
 			return
 		}
-		c.udpConn.SetReadDeadline(time.Now().Add(200 * time.Millisecond))
+
+		// Read multiple packets in batch if available
+		batchBuf = batchBuf[:0]
+		batchSizes = batchSizes[:0]
+
+		// Non-blocking read with short timeout
+		c.udpConn.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
+
+		// Read first packet
 		n, err := c.udpConn.Read(buf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
@@ -140,10 +153,30 @@ func (c *MTPConn) recvLoopDirect() {
 			}
 			continue
 		}
-		// Make a copy and dispatch
+
+		// Add first packet to batch
 		data := make([]byte, n)
 		copy(data, buf[:n])
-		c.processIncoming(data)
+		batchBuf = append(batchBuf, data)
+		batchSizes = append(batchSizes, n)
+
+		// Try to read more packets without blocking
+		for i := 0; i < 31; i++ { // Max 32 packets per batch
+			c.udpConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+			n, err := c.udpConn.Read(buf)
+			if err != nil {
+				break // No more packets available
+			}
+			data := make([]byte, n)
+			copy(data, buf[:n])
+			batchBuf = append(batchBuf, data)
+			batchSizes = append(batchSizes, n)
+		}
+
+		// Process batch
+		for _, pktData := range batchBuf {
+			c.processIncoming(pktData)
+		}
 	}
 }
 
@@ -192,8 +225,9 @@ func (c *MTPConn) processIncoming(raw []byte) {
 }
 
 // keepaliveLoop sends periodic PINGs and detects dead connections
+// OPTIMIZED: reduced frequency for high-speed networks
 func (c *MTPConn) keepaliveLoop() {
-	ticker := time.NewTicker(5 * time.Second)
+	ticker := time.NewTicker(10 * time.Second) // Увеличено до 10 сек для снижения overhead
 	defer ticker.Stop()
 
 	for {
@@ -202,7 +236,7 @@ func (c *MTPConn) keepaliveLoop() {
 			return
 		case <-ticker.C:
 			lastRecv := time.Unix(0, c.lastRecv.Load())
-			if time.Since(lastRecv) > 30*time.Second {
+			if time.Since(lastRecv) > 60*time.Second { // Увеличено до 60 сек
 				// Connection dead
 				c.Close()
 				return

@@ -362,11 +362,11 @@ func (c *PacketCodec) Encode(pkt *Packet) ([]byte, error) {
 	ciphertext := aead.Seal(nil, nonce, plaintextBuf[:plaintextLen], nil)
 	ciphertextLen := len(ciphertext)
 
-	// 3. Generate smart junk padding
+	// 3. Generate smart junk padding - OPTIMIZED for speed
 	baseSize := 2 + nonceSize + ciphertextLen
-	maxPad := 1350 - baseSize
-	if maxPad < 10 {
-		maxPad = 10
+	maxPad := 256 - baseSize // Уменьшено с 1350 до 256 для снижения overhead
+	if maxPad < 8 {
+		maxPad = 8
 	}
 
 	randBytes := make([]byte, 2)
@@ -375,12 +375,15 @@ func (c *PacketCodec) Encode(pkt *Packet) ([]byte, error) {
 	}
 	rng := binary.BigEndian.Uint16(randBytes)
 
-	// 50% chance to pad up to MTU, 50% chance for small padding
+	// 70% chance for small padding (1-32 bytes), 30% for medium (33-256 bytes)
+	// Это снижает средний размер пакета при сохранении маскировки
 	var padLen int
-	if rng%2 == 0 {
-		padLen = int(rng%uint16(maxPad)) + 1
-	} else {
+	if rng%10 < 7 {
+		// Small padding: 1-32 bytes
 		padLen = int(rng%32) + 1
+	} else {
+		// Medium padding: 33-256 bytes
+		padLen = int(rng%uint16(maxPad)) + 33
 	}
 
 	padding := make([]byte, padLen)
