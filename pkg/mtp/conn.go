@@ -47,6 +47,9 @@ type MTPConn struct {
 
 	// For server: dispatched from listener
 	recvCh chan []byte // raw UDP datagrams dispatched by listener
+
+	// Callback when connection closes (used by server Listener)
+	onClose func()
 }
 
 // newMTPConn creates a new MTPConn (used internally by Dial and Listener).
@@ -368,6 +371,11 @@ func (c *MTPConn) Close() error {
 		// Don't close the UDP socket if we're server-side (shared socket)
 		if !c.isServer {
 			c.udpConn.Close()
+		}
+
+		// Trigger cleanup callback if defined
+		if c.onClose != nil {
+			c.onClose()
 		}
 	})
 	return nil

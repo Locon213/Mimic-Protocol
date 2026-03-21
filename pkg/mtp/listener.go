@@ -214,6 +214,11 @@ func (l *Listener) handleSYN(remoteAddr *net.UDPAddr, pkt *Packet) {
 	l.sessions[sessionID] = conn
 	l.sessMu.Unlock()
 
+	// Register cleanup callback
+	conn.onClose = func() {
+		l.RemoveConnection(sessionID)
+	}
+
 	// Start background workers (recv loop, keepalive)
 	conn.startWorkers()
 
