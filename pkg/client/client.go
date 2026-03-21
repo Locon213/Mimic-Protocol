@@ -172,7 +172,12 @@ func (c *Client) Start(ctx context.Context) error {
 	}
 
 	// 3. Start yamux session
-	session, err := yamux.Client(conn, nil)
+	yamuxCfg := yamux.DefaultConfig()
+	yamuxCfg.MaxStreamWindowSize = 16 * 1024 * 1024
+	yamuxCfg.EnableKeepAlive = true
+	yamuxCfg.KeepAliveInterval = 30 * time.Second
+
+	session, err := yamux.Client(conn, yamuxCfg)
 	if err != nil {
 		conn.Close()
 		c.status.Store(int32(StatusDisconnected))

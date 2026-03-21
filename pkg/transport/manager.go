@@ -65,8 +65,9 @@ func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 
 	// 3. Init Yamux Client
 	yamuxCfg := yamux.DefaultConfig()
+	yamuxCfg.MaxStreamWindowSize = 16 * 1024 * 1024
 	yamuxCfg.EnableKeepAlive = true
-	yamuxCfg.KeepAliveInterval = 10 * time.Second
+	yamuxCfg.KeepAliveInterval = 30 * time.Second
 	yamuxCfg.ConnectionWriteTimeout = 10 * time.Second
 	yamuxCfg.StreamCloseTimeout = 30 * time.Second
 

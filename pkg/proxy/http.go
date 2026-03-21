@@ -67,6 +67,12 @@ func (s *HTTPProxyServer) Serve() {
 				continue
 			}
 		}
+
+		if tc, ok := conn.(*net.TCPConn); ok {
+			tc.SetNoDelay(true)
+			tc.SetReadBuffer(4 * 1024 * 1024)
+			tc.SetWriteBuffer(4 * 1024 * 1024)
+		}
 		s.stats.TotalConns.Add(1)
 		s.stats.ActiveConns.Add(1)
 		go s.handleConn(conn)

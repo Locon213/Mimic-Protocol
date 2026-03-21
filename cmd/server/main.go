@@ -269,8 +269,9 @@ func (s *Server) handleMTPConnection(conn net.Conn, cfg *config.ServerConfig) {
 
 	// Init Yamux Server on this VirtualConn
 	yamuxCfg := yamux.DefaultConfig()
+	yamuxCfg.MaxStreamWindowSize = 16 * 1024 * 1024
 	yamuxCfg.EnableKeepAlive = true
-	yamuxCfg.KeepAliveInterval = 10 * time.Second
+	yamuxCfg.KeepAliveInterval = 30 * time.Second
 	yamuxCfg.ConnectionWriteTimeout = 15 * time.Second
 
 	yamuxSession, err := yamux.Server(vConn, yamuxCfg)

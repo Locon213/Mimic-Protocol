@@ -101,9 +101,9 @@ type BufferConfig struct {
 // DefaultBufferConfig returns default buffer settings
 func DefaultBufferConfig() BufferConfig {
 	return BufferConfig{
-		RelayBufferSize:        128 * 1024, // 128KB - optimized for high-speed networks
-		ReadBufferSize:         64 * 1024,  // 64KB - optimized for high-speed networks
-		EnableOptimizedBuffers: true,       // Enabled by default
+		RelayBufferSize:        4 * 1024 * 1024, // 4MB - optimized for high-speed networks
+		ReadBufferSize:         1 * 1024 * 1024, // 1MB - optimized for high-speed networks
+		EnableOptimizedBuffers: true,            // Enabled by default
 	}
 }
 
