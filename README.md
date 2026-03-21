@@ -9,6 +9,8 @@
 
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.25.5-00ADD8.svg)](https://golang.org)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Locon213/Mimic-Protocol)](https://goreportcard.com/report/github.com/Locon213/Mimic-Protocol)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Locon213/Mimic-Protocol.svg)](https://pkg.go.dev/github.com/Locon213/Mimic-Protocol)
 
 </div>
 
@@ -75,13 +77,19 @@ Mimic-Protocol/
 │   ├── client/         # CLI клиент с SOCKS5 прокси
 │   └── server/         # Серверная часть (MTP)
 ├── pkg/                # Публичные библиотеки
-│   ├── mtp/            # ★ MTP — самописный транспорт поверх UDP
+│   ├── mtp/            # ★ MTP — самописный транспорт поверх UDP (ARQ, FEC, BBR)
 │   ├── protocol/       # Ядро протокола (TLS-mimicry, legacy)
 │   ├── transport/      # VirtualConn + Manager (бесшовная ротация)
 │   ├── proxy/          # SOCKS5 прокси-сервер
+│   ├── client/         # Клиент Mimic с управлением сессиями
 │   ├── mimic/          # Генератор трафик-паттернов
 │   ├── presets/        # Пресеты поведения (social, video, messenger)
-│   └── config/         # Конфигурация с валидацией
+│   ├── config/         # Конфигурация с валидацией
+│   ├── compression/    # Сжатие данных (zstd)
+│   ├── network/        # Сетевые утилиты (DNS, protected dialer)
+│   ├── routing/        # Движок маршрутизации трафика
+│   ├── tunnel/         # Туннелирование трафика
+│   └── version/        # Информация о версии
 ├── internal/           # Внутренние компоненты
 └── docs/               # Документация
 ```

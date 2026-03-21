@@ -9,6 +9,8 @@
 
 [![License](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
 [![Go Version](https://img.shields.io/badge/Go-1.25.5-00ADD8.svg)](https://golang.org)
+[![Go Report Card](https://goreportcard.com/badge/github.com/Locon213/Mimic-Protocol)](https://goreportcard.com/report/github.com/Locon213/Mimic-Protocol)
+[![Go Reference](https://pkg.go.dev/badge/github.com/Locon213/Mimic-Protocol.svg)](https://pkg.go.dev/github.com/Locon213/Mimic-Protocol)
 
 </div>
 
@@ -75,13 +77,19 @@ Mimic-Protocol/
 │   ├── client/         # CLI Client with SOCKS5 proxy
 │   └── server/         # Server (MTP)
 ├── pkg/                # Public libraries
-│   ├── mtp/            # ★ MTP — custom transport over UDP
+│   ├── mtp/            # ★ MTP — custom transport over UDP (ARQ, FEC, BBR)
 │   ├── protocol/       # Protocol Core (TLS-mimicry, legacy)
 │   ├── transport/      # VirtualConn + Manager (seamless rotation)
 │   ├── proxy/          # SOCKS5 proxy server
+│   ├── client/         # Mimic client with session management
 │   ├── mimic/          # Traffic pattern generator
 │   ├── presets/        # Behavior presets (social, video, messenger)
-│   └── config/         # Configuration with validation
+│   ├── config/         # Configuration with validation
+│   ├── compression/    # Data compression (zstd)
+│   ├── network/        # Network utilities (DNS, protected dialer)
+│   ├── routing/        # Traffic routing engine
+│   ├── tunnel/         # Traffic tunneling
+│   └── version/        # Version information
 ├── internal/           # Internal components
 └── docs/               # Documentation
 ```
@@ -97,6 +105,8 @@ Mimic-Protocol/
 6. Every 30-600 seconds, a **seamless transport rotation** occurs.
 
 ## 📋 Configuration
+
+> ⚠️ **Important:** The `goccy/go-yaml` library does not support comments in configuration files. When editing configs, remove comments (lines starting with `#`).
 
 ### Server Setup (`config.example.yaml`)
 
@@ -198,6 +208,30 @@ mimic://550e8400-e29b-41d4-a716-446655440000@your-server.com:443?name=My-Mimic-S
 | `compression.level` | int | ❌ | Compression level (1-3). Default: `2` | `1`, `2`, `3` |
 | `compression.min_size` | int | ❌ | Minimum size for compression. Default: `64` | `64`, `128` |
 | `custom_presets` | map | ❌ | Custom presets for domains (see below) | `{...}` |
+| `proxies` | []object | ❌ | Local proxy list (see below) | `[{"type": "socks5", "port": 1080}]` |
+| `routing.default_policy` | string | ❌ | Default policy: `proxy`, `direct`, `block` | `"proxy"` |
+| `routing.rules` | []object | ❌ | Routing rules (see below) | `[...]` |
+| `settings.switch_time` | string | ❌ | Profile switch interval (format: `"60s-300s"` or `"1m-5m"`) | `"60s-300s"` |
+| `settings.randomize` | bool | ❌ | Random domain switch order | `true` |
+
+#### Proxy Configuration (`proxies`)
+
+The client can run multiple local proxies simultaneously.
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `type` | string | Proxy type: `"socks5"` (with UDP support) or `"http"` |
+| `port` | int | Listening port |
+
+**Example proxies:**
+
+```yaml
+proxies:
+  - type: "socks5"
+    port: 1080
+  - type: "http"
+    port: 8080
+```
 
 #### Custom Presets (`custom_presets`)
 
@@ -255,6 +289,40 @@ custom_presets:
 3. Default presets (by domain mapping)
 4. `web_generic` (default)
 
+#### Routing Configuration (`routing`)
+
+The built-in Routing Engine directs traffic based on rules.
+
+**Policies:**
+- `proxy` — route through Mimic tunnel
+- `direct` — connect directly (bypass tunnel)
+- `block` — block connection
+
+**Rule types:**
+- `domain_suffix` — match by domain suffix (e.g., `ru`, `org`)
+- `domain_keyword` — match by keyword in domain
+- `ip_cidr` — match by IP range (CIDR notation)
+
+**Example routing:**
+
+```yaml
+routing:
+  default_policy: proxy
+  rules:
+    - type: domain_suffix
+      value: ru
+      policy: direct
+    - type: domain_suffix
+      value: cn
+      policy: block
+    - type: ip_cidr
+      value: 192.168.0.0/16
+      policy: direct
+    - type: domain_keyword
+      value: google
+      policy: proxy
+```
+
 #### Full Client Configuration Example
 
 ```yaml
@@ -277,6 +345,9 @@ domains:
   - domain: "my-video-site.com"
     preset: "video"           # Video streaming for this domain
 
+transport: "mtp"
+dns: "1.1.1.1:53"
+
 # Data compression (optional)
 compression:
   enable: false  # true = enable zstd compression
@@ -291,6 +362,12 @@ custom_presets:
     packet_size_max: 300
     packets_per_sec_min: 20
     packets_per_sec_max: 50
+
+proxies:
+  - type: "socks5"
+    port: 1080
+  - type: "http"
+    port: 8080
 
 # Routing Engine (Optional)
 routing:
@@ -310,12 +387,13 @@ settings:
 
 ## 📦 Go Dependencies
 The project relies on the following powerful open-source libraries:
+- **[goccy/go-yaml](https://github.com/goccy/go-yaml)** — Fast YAML parser (10x faster than standard)
 - **[hashicorp/yamux](https://github.com/hashicorp/yamux)** — Stream multiplexing over MTP.
 - **[klauspost/reedsolomon](https://github.com/klauspost/reedsolomon)** — Blazing fast FEC implementation for packet loss recovery.
 - **[refraction-networking/utls](https://github.com/refraction-networking/utls)** — TLS Fingerprint spoofing (browser mimicry).
 - **[golang.org/x/crypto](https://pkg.go.dev/golang.org/x/crypto/chacha20poly1305)** — Secure ChaCha20-Poly1305 encryption.
 - **[google/uuid](https://github.com/google/uuid)** — UUID generation and parsing for authorization.
-- **[go-yaml/yaml](https://github.com/go-yaml/yaml)** — Configuration file parsing.
+- **[klauspost/compress](https://github.com/klauspost/compress)** — High-performance data compression.
 
 ## 🚀 Usage
 
