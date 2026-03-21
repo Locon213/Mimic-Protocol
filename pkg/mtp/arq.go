@@ -25,6 +25,13 @@ const (
 	FECMaxDataShards   = 32 // Увеличено
 	FECMinParityShards = 2  // Минимум parity
 	FECMaxParityShards = 4  // Максимум parity
+
+	// Delayed ACK parameters
+	DelayedACKThreshold = 32                    // Отправлять ACK после N полученных пакетов
+	DelayedACKTimeout   = 15 * time.Millisecond // Максимальная задержка ACK
+
+	// Retransmission loop parameters
+	MinRetransmitCheck = 5 * time.Millisecond // Минимальный интервал проверки ретрансмиссии
 )
 
 // FECConfig - адаптивная конфигурация FEC
@@ -80,13 +87,12 @@ func (c *FECConfig) Adjust(packetLoss float64) {
 }
 
 type inflight struct {
-	pkt        *Packet
-	encoded    []byte
-	sentAt     time.Time
-	retries    int
-	retransmit *time.Timer
-	delivered  uint64 // Поле для расчетов BBR на момент отправки
-	size       int    // размер пакета для статистики
+	pkt       *Packet
+	encoded   []byte
+	sentAt    time.Time
+	retries   int
+	delivered uint64 // Поле для расчетов BBR на момент отправки
+	size      int    // размер пакета для статистики
 }
 
 // ARQEngine manages reliable delivery over unreliable UDP
@@ -98,15 +104,18 @@ type ARQEngine struct {
 	statsMu sync.RWMutex // Protects statistics
 
 	// Send state
-	sendSeq    uint32               // Next sequence number to assign
-	sendWindow int                  // Current congestion window size
-	ssthresh   int                  // Slow start threshold
-	unacked    map[uint32]*inflight // Packets waiting for ACK
+	sendSeq      uint32               // Next sequence number to assign
+	sendWindow   int                  // Current congestion window size
+	ssthresh     int                  // Slow start threshold
+	unacked      map[uint32]*inflight // Packets waiting for ACK
+	windowUpdate chan struct{}        // Сигнал Send() при освобождении окна
 
 	// Receive state
-	recvNext  uint32             // Next expected sequence number
-	recvBuf   map[uint32]*Packet // Out-of-order received packets
-	delivered chan *Packet       // Ordered packets ready for Read()
+	recvNext        uint32             // Next expected sequence number
+	recvBuf         map[uint32]*Packet // Out-of-order received packets
+	delivered       chan *Packet       // Ordered packets ready for Read()
+	unackedRecv     int                // Кол-во неподтверждённых полученных пакетов
+	delayedACKTimer *time.Timer        // Таймер отложенного ACK
 
 	// RTT estimation (Jacobson/Karels algorithm)
 	srtt    time.Duration // Smoothed RTT
@@ -158,17 +167,18 @@ type ARQEngine struct {
 // NewARQEngine creates a new ARQ engine with optimized parameters
 func NewARQEngine(codec *PacketCodec, sendFunc func([]byte) error, deliverBufSize int) *ARQEngine {
 	arq := &ARQEngine{
-		sendWindow: 256,  // Увеличено для быстрого старта (было 32)
-		ssthresh:   1024, // Увеличено для высоких скоростей (было 256)
-		unacked:    make(map[uint32]*inflight),
-		recvBuf:    make(map[uint32]*Packet),
-		delivered:  make(chan *Packet, deliverBufSize),
-		rto:        InitialRTO,
-		sendFunc:   sendFunc,
-		codec:      codec,
-		closeCh:    make(chan struct{}),
-		minRTT:     10 * time.Second,
-		fecConfig:  NewFECConfig(),
+		sendWindow:   256,  // Увеличено для быстрого старта (было 32)
+		ssthresh:     1024, // Увеличено для высоких скоростей (было 256)
+		unacked:      make(map[uint32]*inflight),
+		windowUpdate: make(chan struct{}, 1),
+		recvBuf:      make(map[uint32]*Packet),
+		delivered:    make(chan *Packet, deliverBufSize),
+		rto:          InitialRTO,
+		sendFunc:     sendFunc,
+		codec:        codec,
+		closeCh:      make(chan struct{}),
+		minRTT:       10 * time.Second,
+		fecConfig:    NewFECConfig(),
 	}
 
 	// Initialize pacer: 10000 packets/sec, burst 64 (optimized for high-speed networks)
@@ -198,11 +208,14 @@ func NewARQEngine(codec *PacketCodec, sendFunc func([]byte) error, deliverBufSiz
 	}, arq.fecConfig)
 	arq.fecDec = dec
 
+	// Запуск единственной горутины ретрансмиссии вместо per-packet таймеров
+	go arq.retransmissionLoop()
+
 	return arq
 }
 
 // Send queues a DATA packet for reliable delivery with pacing
-// OPTIMIZED: split locks for better concurrency
+// OPTIMIZED: uses windowUpdate channel for instant wake-up on ACK
 func (a *ARQEngine) Send(payload []byte) error {
 	a.sendMu.Lock()
 	if a.closed {
@@ -210,13 +223,14 @@ func (a *ARQEngine) Send(payload []byte) error {
 		return fmt.Errorf("mtp: arq engine closed")
 	}
 
-	// Wait for window space using condition variable approach
+	// Ожидание свободного места в окне: моментальное пробуждение через windowUpdate
 	for len(a.unacked) >= a.sendWindow {
 		a.sendMu.Unlock()
 		select {
 		case <-a.closeCh:
 			return fmt.Errorf("mtp: arq engine closed")
-		case <-time.After(1 * time.Millisecond): // Уменьшено до 1ms для быстрой реакции
+		case <-a.windowUpdate:
+			// Получен ACK — место в окне освободилось
 		}
 		a.sendMu.Lock()
 		if a.closed {
@@ -270,15 +284,6 @@ func (a *ARQEngine) Send(payload []byte) error {
 	if err := a.sendFunc(encoded); err != nil {
 		return err
 	}
-
-	// Start retransmission timer
-	a.sendMu.Lock()
-	if inf2, ok := a.unacked[seq]; ok {
-		inf2.retransmit = time.AfterFunc(a.rto, func() {
-			a.retransmitPacket(seq)
-		})
-	}
-	a.sendMu.Unlock()
 
 	return nil
 }
@@ -424,15 +429,20 @@ func (a *ARQEngine) processAckedPacket(seq uint32, inf *inflight) {
 		}
 	}
 
-	if inf.retransmit != nil {
-		inf.retransmit.Stop()
-	}
 	delete(a.unacked, seq)
+
+	// Сигнал Send() что место в окне освободилось
+	select {
+	case a.windowUpdate <- struct{}{}:
+	default:
+	}
 }
 
 // handleDATA processes an incoming DATA packet
+// OPTIMIZED: delayed ACK — отправляем ACK по порогу или таймеру
 func (a *ARQEngine) handleDATA(pkt *Packet) {
 	seq := pkt.SeqNum
+	outOfOrder := false
 
 	if seq == a.recvNext {
 		a.deliverPacket(pkt)
@@ -449,9 +459,20 @@ func (a *ARQEngine) handleDATA(pkt *Packet) {
 		}
 	} else if seq > a.recvNext {
 		a.recvBuf[seq] = pkt
+		outOfOrder = true
 	}
 
-	a.sendACK()
+	// Delayed ACK: сразу при out-of-order или пороге, иначе по таймеру
+	a.unackedRecv++
+	if a.unackedRecv >= DelayedACKThreshold || outOfOrder {
+		a.flushACK()
+	} else if a.delayedACKTimer == nil {
+		a.delayedACKTimer = time.AfterFunc(DelayedACKTimeout, func() {
+			a.recvMu.Lock()
+			a.flushACK()
+			a.recvMu.Unlock()
+		})
+	}
 }
 
 // deliverPacket sends a packet to the delivery channel
@@ -489,52 +510,84 @@ func (a *ARQEngine) sendACK() {
 	a.sendFunc(encoded)
 }
 
-// retransmitPacket handles retransmission with improved congestion control
-// OPTIMIZED: split locks for better concurrency
-func (a *ARQEngine) retransmitPacket(seq uint32) {
-	a.sendMu.Lock()
-	defer a.sendMu.Unlock()
+// retransmissionLoop — единственная горутина, проверяющая пакеты на таймаут
+// Заменяет per-packet time.AfterFunc, снижая нагрузку на GC и scheduler
+func (a *ARQEngine) retransmissionLoop() {
+	for {
+		// Динамический интервал: rto/4, но не менее MinRetransmitCheck
+		a.sendMu.RLock()
+		checkInterval := a.rto / 4
+		if checkInterval < MinRetransmitCheck {
+			checkInterval = MinRetransmitCheck
+		}
+		a.sendMu.RUnlock()
 
-	if a.closed {
-		return
+		select {
+		case <-a.closeCh:
+			return
+		case <-time.After(checkInterval):
+		}
+
+		a.sendMu.Lock()
+		if a.closed {
+			a.sendMu.Unlock()
+			return
+		}
+
+		now := time.Now()
+		currentRTO := a.rto
+		var toRetransmit []*retransmitEntry
+
+		for seq, inf := range a.unacked {
+			if now.Sub(inf.sentAt) > currentRTO {
+				toRetransmit = append(toRetransmit, &retransmitEntry{seq: seq, inf: inf})
+			}
+		}
+
+		// Обработка ретрансмиссий
+		for _, entry := range toRetransmit {
+			entry.inf.retries++
+			if entry.inf.retries > MaxRetransmissions {
+				delete(a.unacked, entry.seq)
+				// Сигнал Send() что место в окне освободилось
+				select {
+				case a.windowUpdate <- struct{}{}:
+				default:
+				}
+				continue
+			}
+
+			// Re-encode with fresh padding (polymorphic!)
+			encoded, err := a.codec.Encode(entry.inf.pkt)
+			if err != nil {
+				continue
+			}
+			entry.inf.encoded = encoded
+			entry.inf.sentAt = now
+
+			a.sendFunc(encoded)
+
+			// Update stats
+			a.statsMu.Lock()
+			a.totalRetransmissions++
+			a.statsMu.Unlock()
+		}
+
+		// Congestion control: уменьшаем окно один раз за цикл, если были ретрансмиссии
+		if len(toRetransmit) > 0 {
+			a.ssthresh = max(a.sendWindow*85/100, 16)
+			a.sendWindow = a.ssthresh
+			a.rto = time.Duration(math.Min(float64(a.rto*2), float64(MaxRTO)))
+		}
+
+		a.sendMu.Unlock()
 	}
+}
 
-	inf, ok := a.unacked[seq]
-	if !ok {
-		return
-	}
-
-	inf.retries++
-	if inf.retries > MaxRetransmissions {
-		delete(a.unacked, seq)
-		return
-	}
-
-	// BBR: более мягкое уменьшение окна (15% вместо 20%)
-	a.ssthresh = max(a.sendWindow*85/100, 16)
-	a.sendWindow = a.ssthresh
-
-	// Exponential backoff on RTO
-	a.rto = time.Duration(math.Min(float64(a.rto*2), float64(MaxRTO)))
-
-	// Update stats with separate lock
-	a.statsMu.Lock()
-	a.totalRetransmissions++
-	a.statsMu.Unlock()
-
-	// Re-encode with fresh padding (polymorphic!)
-	encoded, err := a.codec.Encode(inf.pkt)
-	if err != nil {
-		return
-	}
-	inf.encoded = encoded
-	inf.sentAt = time.Now()
-
-	a.sendFunc(encoded)
-
-	inf.retransmit = time.AfterFunc(a.rto, func() {
-		a.retransmitPacket(seq)
-	})
+// retransmitEntry — вспомогательная структура для batch-ретрансмиссии
+type retransmitEntry struct {
+	seq uint32
+	inf *inflight
 }
 
 // updateRTT updates the smoothed RTT using Jacobson/Karels algorithm
@@ -594,6 +647,17 @@ func (a *ARQEngine) Delivered() <-chan *Packet {
 	return a.delivered
 }
 
+// flushACK сбрасывает накопленный ACK и обнуляет счётчик
+// Вызывается под recvMu.Lock()
+func (a *ARQEngine) flushACK() {
+	if a.delayedACKTimer != nil {
+		a.delayedACKTimer.Stop()
+		a.delayedACKTimer = nil
+	}
+	a.unackedRecv = 0
+	a.sendACK()
+}
+
 // Close stops the ARQ engine
 // OPTIMIZED: split locks for better concurrency
 func (a *ARQEngine) Close() {
@@ -606,11 +670,14 @@ func (a *ARQEngine) Close() {
 	a.closed = true
 	close(a.closeCh)
 
-	for _, inf := range a.unacked {
-		if inf.retransmit != nil {
-			inf.retransmit.Stop()
-		}
+	// Остановить delayed ACK таймер
+	a.recvMu.Lock()
+	if a.delayedACKTimer != nil {
+		a.delayedACKTimer.Stop()
+		a.delayedACKTimer = nil
 	}
+	a.recvMu.Unlock()
+
 	a.unacked = nil
 }
 
