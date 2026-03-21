@@ -13,6 +13,7 @@ type Pacer struct {
 	maxTokens  int
 	refillRate float64 // packets per second
 	lastRefill time.Time
+	stopCh     chan struct{}
 }
 
 // NewPacer creates a new pacer with the given rate limit
@@ -24,17 +25,33 @@ func NewPacer(rate int, burst int) *Pacer {
 		maxTokens:  burst,
 		refillRate: float64(rate),
 		lastRefill: time.Now(),
+		stopCh:     make(chan struct{}),
 	}
 }
 
-// Wait blocks until a token is available
+// Wait blocks until a token is available or pacer is stopped
 func (p *Pacer) Wait() {
 	for {
 		if p.tryConsume() {
 			return
 		}
-		// Sleep for a short time before retrying
+		// Check if stopped
+		select {
+		case <-p.stopCh:
+			return
+		default:
+		}
 		time.Sleep(time.Millisecond)
+	}
+}
+
+// Close stops the pacer, unblocking any Wait() calls
+func (p *Pacer) Close() {
+	select {
+	case <-p.stopCh:
+		// Already closed
+	default:
+		close(p.stopCh)
 	}
 }
 

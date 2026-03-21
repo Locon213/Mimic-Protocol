@@ -66,9 +66,8 @@ func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 	// 3. Init Yamux Client
 	yamuxCfg := yamux.DefaultConfig()
 	yamuxCfg.MaxStreamWindowSize = 16 * 1024 * 1024
-	yamuxCfg.EnableKeepAlive = true
-	yamuxCfg.KeepAliveInterval = 30 * time.Second
-	yamuxCfg.ConnectionWriteTimeout = 10 * time.Second
+	yamuxCfg.EnableKeepAlive = false                   // MTP handles keepalives natively
+	yamuxCfg.ConnectionWriteTimeout = 10 * time.Minute // Prevent sudden session shutdowns
 	yamuxCfg.StreamCloseTimeout = 30 * time.Second
 
 	session, err := yamux.Client(m.virtualConn, yamuxCfg)
@@ -95,29 +94,12 @@ func (m *Manager) RotateTransport(newDomain string) error {
 
 	log.Printf("[Transport] Rotating transport (MTP migration)...")
 
-	// 1. Create NEW MTPConn via session migration (uses protected dialer)
-	newConn, err := mtp.DialMigrate(m.resolver, m.serverAddr, m.uuid, m.uuid)
-	if err != nil {
+	// 1. Migrate existing MTPConn (seamlessly swaps underlying UDP socket while keeping ARQ state)
+	if err := m.mtpConn.Migrate(m.resolver, m.serverAddr); err != nil {
 		return fmt.Errorf("failed to migrate MTP session: %w", err)
 	}
 
-	// 2. Seamless swap the connection in VirtualConn
-	// This buffers any in-flight writes and replays them on the new connection
-	oldConn := m.currentConn
-	if err := m.virtualConn.SwapConnectionSeamless(newConn); err != nil {
-		newConn.Close()
-		return fmt.Errorf("seamless swap failed: %w", err)
-	}
-	m.currentConn = newConn
-	m.mtpConn = newConn
-
-	// 3. Gracefully close old connection after drain period
-	if oldConn != nil {
-		go func() {
-			time.Sleep(2 * time.Second)
-			oldConn.Close()
-		}()
-	}
+	// The VirtualConn and Yamux session on top remain fully valid since mtpConn internally swapped sockets!
 
 	log.Printf("[Transport] Transport rotated successfully via MTP migration")
 	return nil

@@ -101,14 +101,25 @@ func (l *Listener) Close() error {
 	close(l.closeCh)
 	close(l.acceptCh)
 
-	// Close all connections
+	// Close UDP socket FIRST to unblock readLoop goroutine
+	err := l.udpConn.Close()
+
+	// Collect connections under lock, then close outside lock to avoid deadlock
 	l.connMu.Lock()
+	conns := make([]*MTPConn, 0, len(l.connections))
 	for _, conn := range l.connections {
-		conn.Close()
+		conns = append(conns, conn)
 	}
 	l.connMu.Unlock()
 
-	return l.udpConn.Close()
+	for _, conn := range conns {
+		conn.Close()
+	}
+
+	// Close the listener's own codec goroutines
+	l.codec.Close()
+
+	return err
 }
 
 // Addr returns the listener's network address.

@@ -13,10 +13,13 @@ import (
 // MTPConn implements net.Conn over a reliable UDP transport using the MTP protocol.
 // It provides ordered, reliable delivery with polymorphic packet encoding.
 type MTPConn struct {
+	// Connection management (for migration)
+	connMu     sync.RWMutex
 	udpConn    *net.UDPConn
 	remoteAddr *net.UDPAddr
-	codec      *PacketCodec
-	arq        *ARQEngine
+
+	codec *PacketCodec
+	arq   *ARQEngine
 
 	// Read buffer for reassembling delivered data
 	readBuf []byte
@@ -96,11 +99,16 @@ func (c *MTPConn) sendRaw(data []byte) error {
 	if c.closed.Load() {
 		return net.ErrClosed
 	}
+	c.connMu.RLock()
+	uConn := c.udpConn
+	rAddr := c.remoteAddr
+	c.connMu.RUnlock()
+
 	var err error
 	if c.isServer {
-		_, err = c.udpConn.WriteToUDP(data, c.remoteAddr)
+		_, err = uConn.WriteToUDP(data, rAddr)
 	} else {
-		_, err = c.udpConn.Write(data)
+		_, err = uConn.Write(data)
 	}
 	if err == nil {
 		c.BytesSent.Add(int64(len(data)))
@@ -142,11 +150,20 @@ func (c *MTPConn) recvLoopDirect() {
 		batchBuf = batchBuf[:0]
 		batchSizes = batchSizes[:0]
 
+		c.connMu.RLock()
+		uConn := c.udpConn
+		c.connMu.RUnlock()
+
+		if uConn == nil {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+
 		// Non-blocking read with short timeout
-		c.udpConn.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
+		uConn.SetReadDeadline(time.Now().Add(10 * time.Millisecond))
 
 		// Read first packet
-		n, err := c.udpConn.Read(buf)
+		n, err := uConn.Read(buf)
 		if err != nil {
 			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
 				continue
@@ -165,8 +182,8 @@ func (c *MTPConn) recvLoopDirect() {
 
 		// Try to read more packets without blocking
 		for i := 0; i < 31; i++ { // Max 32 packets per batch
-			c.udpConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
-			n, err := c.udpConn.Read(buf)
+			uConn.SetReadDeadline(time.Now().Add(1 * time.Millisecond))
+			n, err := uConn.Read(buf)
 			if err != nil {
 				break // No more packets available
 			}
@@ -211,6 +228,18 @@ func (c *MTPConn) processIncoming(raw []byte) {
 
 	case PacketPONG:
 		// Keepalive response received, lastRecv already updated
+
+	case PacketSYN:
+		// Duplicate SYN from client (means SYN-ACK was lost)
+		if c.isServer {
+			synAck := &Packet{
+				Type:    PacketSYNACK,
+				SeqNum:  0,
+				AckNum:  1,
+				Payload: []byte(c.sessionID),
+			}
+			c.arq.SendControl(synAck)
+		}
 
 	case PacketFIN:
 		// Peer wants to close
@@ -357,14 +386,17 @@ func (c *MTPConn) Write(b []byte) (int, error) {
 // Close implements net.Conn
 func (c *MTPConn) Close() error {
 	c.closeOnce.Do(func() {
-		c.closed.Store(true)
-
-		// Send FIN
+		// Send FIN while connection is still alive internally
 		fin := &Packet{Type: PacketFIN}
 		c.arq.SendControl(fin) // Best effort
 
+		c.closed.Store(true)
+
 		// Stop ARQ
 		c.arq.Close()
+
+		// Stop codec background goroutines
+		c.codec.Close()
 
 		close(c.closeCh)
 
@@ -481,42 +513,86 @@ func DialWithConfig(resolver UDPResolver, address string, secret string, compres
 	return conn, nil
 }
 
-// DialMigrate creates a new MTPConn for session migration (seamless rotation)
-// Uses protected dialer when running under Android VpnService.
-func DialMigrate(resolver UDPResolver, address string, secret string, sessionID string) (*MTPConn, error) {
-	return DialMigrateWithConfig(resolver, address, secret, sessionID, nil)
-}
-
-// DialMigrateWithConfig creates a new MTPConn for session migration with custom configuration
-// Uses protected dialer when running under Android VpnService.
-func DialMigrateWithConfig(resolver UDPResolver, address string, secret string, sessionID string, compression *CompressionConfig) (*MTPConn, error) {
+// Migrate performs session migration (seamless rotation) on an existing connection.
+// It opens a new UDP socket, performs the MIGRATE handshake, and seamlessly swaps the underlying transport
+// while preserving the ARQ engine and sequence numbers.
+func (c *MTPConn) Migrate(resolver UDPResolver, address string) error {
 	raddr, err := resolver.ResolveUDPAddr("udp", address)
 	if err != nil {
-		return nil, fmt.Errorf("mtp: resolve address: %w", err)
+		return fmt.Errorf("mtp: resolve migrate address: %w", err)
 	}
 
 	// Use protected dialer for Android VpnService compatibility
-	udpConn, err := network.DialUDPProtected("udp", nil, raddr)
+	newUdpConn, err := network.DialUDPProtected("udp", nil, raddr)
 	if err != nil {
-		return nil, fmt.Errorf("mtp: dial udp: %w", err)
+		return fmt.Errorf("mtp: dial migrate udp: %w", err)
 	}
 
-	_ = udpConn.SetReadBuffer(4 * 1024 * 1024)
-	_ = udpConn.SetWriteBuffer(4 * 1024 * 1024)
+	_ = newUdpConn.SetReadBuffer(4 * 1024 * 1024)
+	_ = newUdpConn.SetWriteBuffer(4 * 1024 * 1024)
 
-	conn := newMTPConn(udpConn, raddr, secret, false, compression)
-	conn.sessionID = sessionID
-
-	// Perform migration handshake FIRST
-	if err := conn.handshakeMigrate(sessionID); err != nil {
-		conn.udpConn.Close()
-		return nil, fmt.Errorf("mtp: migration handshake failed: %w", err)
+	// Perform migration handshake FIRST on the new socket
+	syn := &Packet{
+		Type:    PacketSYN,
+		SeqNum:  0,
+		Flags:   FlagMigrate,
+		Payload: []byte(fmt.Sprintf("MIGRATE:%s", c.sessionID)),
 	}
 
-	// NOW start background workers
-	conn.startWorkers()
+	encoded, err := c.codec.Encode(syn)
+	if err != nil {
+		newUdpConn.Close()
+		return err
+	}
 
-	return conn, nil
+	// Send SYN with MIGRATE flag and wait for SYN-ACK
+	buf := make([]byte, 65535)
+	success := false
+	for attempt := 0; attempt < 5; attempt++ {
+		if _, err := newUdpConn.Write(encoded); err != nil {
+			newUdpConn.Close()
+			return err
+		}
+
+		newUdpConn.SetReadDeadline(time.Now().Add(2 * time.Second))
+		n, err := newUdpConn.Read(buf)
+		if err != nil {
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				continue
+			}
+			newUdpConn.Close()
+			return err
+		}
+
+		pkt, err := c.codec.Decode(buf[:n])
+		if err != nil {
+			continue
+		}
+
+		if pkt.Type == PacketSYNACK {
+			newUdpConn.SetReadDeadline(time.Time{})
+			success = true
+			break
+		}
+	}
+
+	if !success {
+		newUdpConn.Close()
+		return fmt.Errorf("mtp: migration handshake timeout")
+	}
+
+	// Swap underlying connection thread-safely
+	c.connMu.Lock()
+	oldUdpConn := c.udpConn
+	c.remoteAddr = raddr
+	c.udpConn = newUdpConn
+	c.connMu.Unlock()
+
+	if oldUdpConn != nil {
+		oldUdpConn.Close()
+	}
+
+	return nil
 }
 
 // handshakeClient performs the client-side SYN/SYN-ACK handshake
@@ -562,48 +638,4 @@ func (c *MTPConn) handshakeClient(uuid string) error {
 	}
 
 	return fmt.Errorf("mtp: handshake timeout after 5 attempts")
-}
-
-// handshakeMigrate performs the migration handshake
-func (c *MTPConn) handshakeMigrate(sessionID string) error {
-	syn := &Packet{
-		Type:    PacketSYN,
-		SeqNum:  0,
-		Flags:   FlagMigrate,
-		Payload: []byte(fmt.Sprintf("MIGRATE:%s", sessionID)),
-	}
-
-	encoded, err := c.codec.Encode(syn)
-	if err != nil {
-		return err
-	}
-
-	// Send SYN with MIGRATE flag and wait for SYN-ACK
-	buf := make([]byte, 65535)
-	for attempt := 0; attempt < 5; attempt++ {
-		if err := c.sendRaw(encoded); err != nil {
-			return err
-		}
-
-		c.udpConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-		n, err := c.udpConn.Read(buf)
-		if err != nil {
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				continue
-			}
-			return err
-		}
-
-		pkt, err := c.codec.Decode(buf[:n])
-		if err != nil {
-			continue
-		}
-
-		if pkt.Type == PacketSYNACK {
-			c.udpConn.SetReadDeadline(time.Time{})
-			return nil
-		}
-	}
-
-	return fmt.Errorf("mtp: migration handshake timeout")
 }

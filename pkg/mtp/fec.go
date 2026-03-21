@@ -191,6 +191,7 @@ func (f *FecDecoder) configLoop() {
 			if err == nil {
 				f.encoder = newEnc
 				f.config = newConfig
+				f.groups = make(map[uint32]*FecGroup)
 			}
 		} else {
 			f.config = newConfig

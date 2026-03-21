@@ -74,6 +74,7 @@ type PacketCodec struct {
 	dcid         []byte // 8-byte Connection ID for QUIC masking
 	dcidRevision atomic.Uint64
 	dcidMu       sync.RWMutex
+	stopCh       chan struct{} // Closed to stop background goroutines
 
 	// Compression (optional, applied before encryption)
 	compressor  interface{} // *compression.Compressor or nil
@@ -117,6 +118,7 @@ func NewPacketCodecWithConfig(cfg CodecConfig) *PacketCodec {
 		sharedKey:   key,
 		dcid:        dcid,
 		compressCfg: cfg.Compression,
+		stopCh:      make(chan struct{}),
 	}
 
 	// Initialize compressor if compression is enabled
@@ -133,24 +135,38 @@ func NewPacketCodecWithConfig(cfg CodecConfig) *PacketCodec {
 	return codec
 }
 
+// Close stops background goroutines
+func (c *PacketCodec) Close() {
+	select {
+	case <-c.stopCh:
+		// Already closed
+	default:
+		close(c.stopCh)
+	}
+}
+
 // rotateDCID periodically rotates the DCID for improved security
 func (c *PacketCodec) rotateDCID(intervalSeconds int) {
 	ticker := time.NewTicker(time.Duration(intervalSeconds) * time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		c.dcidMu.Lock()
-		revision := c.dcidRevision.Load() + 1
-		c.dcidRevision.Store(revision)
+	for {
+		select {
+		case <-c.stopCh:
+			return
+		case <-ticker.C:
+			c.dcidMu.Lock()
+			revision := c.dcidRevision.Load() + 1
+			c.dcidRevision.Store(revision)
 
-		// Derive new DCID with revision
-		mac := hmac.New(sha256.New, c.sharedKey)
-		mac.Write([]byte("QUIC_DCID_DERIVATION"))
-		mac.Write([]byte{byte(revision), byte(revision >> 8), byte(revision >> 16), byte(revision >> 24)})
-		newDCID := mac.Sum(nil)[:8]
+			mac := hmac.New(sha256.New, c.sharedKey)
+			mac.Write([]byte("QUIC_DCID_DERIVATION"))
+			mac.Write([]byte{byte(revision), byte(revision >> 8), byte(revision >> 16), byte(revision >> 24)})
+			newDCID := mac.Sum(nil)[:8]
 
-		c.dcid = newDCID
-		c.dcidMu.Unlock()
+			c.dcid = newDCID
+			c.dcidMu.Unlock()
+		}
 	}
 }
 

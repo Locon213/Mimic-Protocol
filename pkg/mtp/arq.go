@@ -52,38 +52,45 @@ func NewFECConfig() *FECConfig {
 	}
 }
 
-// Adjust адаптирует параметры FEC на основе потерь
-// OPTIMIZED: reduced overhead for high-speed networks
-func (c *FECConfig) Adjust(packetLoss float64) {
-	c.PacketLoss = packetLoss
+// GetAdjusted адаптирует параметры на основе потерь и возвращает новый конфиг
+// OPTIMIZED: immutable to prevent data races
+func (c *FECConfig) GetAdjusted(packetLoss float64) *FECConfig {
+	newCfg := &FECConfig{
+		DataShards:   c.DataShards,
+		ParityShards: c.ParityShards,
+		AutoAdjust:   c.AutoAdjust,
+		PacketLoss:   packetLoss,
+	}
 
-	if !c.AutoAdjust {
-		return
+	if !newCfg.AutoAdjust {
+		return newCfg
 	}
 
 	// Адаптивный выбор параметров на основе потерь
 	// Оптимизировано для высокоскоростных сетей (100 Mbps+)
 	if packetLoss < 0.005 {
-		// Отличная сеть: минимальный оверхед или отключить FEC
-		c.DataShards = 32
-		c.ParityShards = 1 // 3% оверхед (было 11%)
+		// Отличная сеть: минимальный оверхед
+		newCfg.DataShards = 32
+		newCfg.ParityShards = 1
 	} else if packetLoss < 0.02 {
 		// Хорошая сеть: минимальный оверхед
-		c.DataShards = 24
-		c.ParityShards = 2 // 8% оверхед (было 11%)
+		newCfg.DataShards = 24
+		newCfg.ParityShards = 2
 	} else if packetLoss < 0.05 {
 		// Средняя сеть
-		c.DataShards = 16
-		c.ParityShards = 2 // 11% оверхед (было 20%)
+		newCfg.DataShards = 16
+		newCfg.ParityShards = 2
 	} else if packetLoss < 0.10 {
 		// Плохая сеть
-		c.DataShards = 12
-		c.ParityShards = 3 // 20% оверхед (было 27%)
+		newCfg.DataShards = 12
+		newCfg.ParityShards = 3
 	} else {
 		// Очень плохая сеть: максимальная коррекция
-		c.DataShards = 8
-		c.ParityShards = 4 // 33% оверхед
+		newCfg.DataShards = 8
+		newCfg.ParityShards = 4
 	}
+
+	return newCfg
 }
 
 type inflight struct {
@@ -99,16 +106,16 @@ type inflight struct {
 // OPTIMIZED: split locks for better concurrency
 type ARQEngine struct {
 	// Split locks for better concurrency
-	sendMu  sync.RWMutex // Protects send state
-	recvMu  sync.RWMutex // Protects receive state
-	statsMu sync.RWMutex // Protects statistics
+	sendMu   sync.RWMutex // Protects send state
+	sendCond *sync.Cond   // Signaled when send window frees up
+	recvMu   sync.RWMutex // Protects receive state
+	statsMu  sync.RWMutex // Protects statistics
 
 	// Send state
-	sendSeq      uint32               // Next sequence number to assign
-	sendWindow   int                  // Current congestion window size
-	ssthresh     int                  // Slow start threshold
-	unacked      map[uint32]*inflight // Packets waiting for ACK
-	windowUpdate chan struct{}        // Сигнал Send() при освобождении окна
+	sendSeq    uint32               // Next sequence number to assign
+	sendWindow int                  // Current congestion window size
+	ssthresh   int                  // Slow start threshold
+	unacked    map[uint32]*inflight // Packets waiting for ACK
 
 	// Receive state
 	recvNext        uint32             // Next expected sequence number
@@ -167,19 +174,20 @@ type ARQEngine struct {
 // NewARQEngine creates a new ARQ engine with optimized parameters
 func NewARQEngine(codec *PacketCodec, sendFunc func([]byte) error, deliverBufSize int) *ARQEngine {
 	arq := &ARQEngine{
-		sendWindow:   256,  // Увеличено для быстрого старта (было 32)
-		ssthresh:     1024, // Увеличено для высоких скоростей (было 256)
-		unacked:      make(map[uint32]*inflight),
-		windowUpdate: make(chan struct{}, 1),
-		recvBuf:      make(map[uint32]*Packet),
-		delivered:    make(chan *Packet, deliverBufSize),
-		rto:          InitialRTO,
-		sendFunc:     sendFunc,
-		codec:        codec,
-		closeCh:      make(chan struct{}),
-		minRTT:       10 * time.Second,
-		fecConfig:    NewFECConfig(),
+		sendWindow: 256,  // Увеличено для быстрого старта (было 32)
+		ssthresh:   1024, // Увеличено для высоких скоростей (было 256)
+		unacked:    make(map[uint32]*inflight),
+
+		recvBuf:   make(map[uint32]*Packet),
+		delivered: make(chan *Packet, deliverBufSize),
+		rto:       InitialRTO,
+		sendFunc:  sendFunc,
+		codec:     codec,
+		closeCh:   make(chan struct{}),
+		minRTT:    10 * time.Second,
+		fecConfig: NewFECConfig(),
 	}
+	arq.sendCond = sync.NewCond(&arq.sendMu)
 
 	// Initialize pacer: 10000 packets/sec, burst 64 (optimized for high-speed networks)
 	arq.pacer = NewPacer(10000, 64)
@@ -225,15 +233,14 @@ func (a *ARQEngine) Send(payload []byte) error {
 
 	// Ожидание свободного места в окне: моментальное пробуждение через windowUpdate
 	for len(a.unacked) >= a.sendWindow {
-		a.sendMu.Unlock()
 		select {
 		case <-a.closeCh:
+			a.sendMu.Unlock()
 			return fmt.Errorf("mtp: arq engine closed")
-		case <-a.windowUpdate:
-			// Получен ACK — место в окне освободилось
+		default:
+			a.sendCond.Wait()
 		}
-		a.sendMu.Lock()
-		if a.closed {
+		if a.closed { // Check again after waking up
 			a.sendMu.Unlock()
 			return fmt.Errorf("mtp: arq engine closed")
 		}
@@ -360,10 +367,17 @@ func (a *ARQEngine) handleACK(pkt *Packet) {
 	// Update pacing based on bandwidth
 	a.updatePacing()
 
-	// Update FEC config based on packet loss
+	// Update FEC config based on packet loss safely
 	if a.packetsSent > 0 {
 		lossRate := float64(a.packetsLost) / float64(a.packetsSent)
-		a.fecConfig.Adjust(lossRate)
+		newCfg := a.fecConfig.GetAdjusted(lossRate)
+		if newCfg.DataShards != a.fecConfig.DataShards || newCfg.ParityShards != a.fecConfig.ParityShards {
+			a.fecConfig = newCfg
+			a.fecEnc.Reconfigure(newCfg)
+			a.fecDec.Reconfigure(newCfg)
+		} else {
+			a.fecConfig.PacketLoss = lossRate
+		}
 	}
 
 	// BBR congestion control - optimized for high-speed
@@ -431,11 +445,8 @@ func (a *ARQEngine) processAckedPacket(seq uint32, inf *inflight) {
 
 	delete(a.unacked, seq)
 
-	// Сигнал Send() что место в окне освободилось
-	select {
-	case a.windowUpdate <- struct{}{}:
-	default:
-	}
+	// Уведомляем все горутины, ожидающие места в окне
+	a.sendCond.Broadcast()
 }
 
 // handleDATA processes an incoming DATA packet
@@ -477,6 +488,10 @@ func (a *ARQEngine) handleDATA(pkt *Packet) {
 
 // deliverPacket sends a packet to the delivery channel
 func (a *ARQEngine) deliverPacket(pkt *Packet) {
+	if a.closed {
+		return
+	}
+	defer func() { recover() }() // Guard against closed channel panic
 	select {
 	case a.delivered <- pkt:
 	default:
@@ -549,11 +564,8 @@ func (a *ARQEngine) retransmissionLoop() {
 			entry.inf.retries++
 			if entry.inf.retries > MaxRetransmissions {
 				delete(a.unacked, entry.seq)
-				// Сигнал Send() что место в окне освободилось
-				select {
-				case a.windowUpdate <- struct{}{}:
-				default:
-				}
+				// Уведомляем все горутины, ожидающие места в окне
+				a.sendCond.Broadcast()
 				continue
 			}
 
@@ -662,13 +674,35 @@ func (a *ARQEngine) flushACK() {
 // OPTIMIZED: split locks for better concurrency
 func (a *ARQEngine) Close() {
 	a.sendMu.Lock()
-	defer a.sendMu.Unlock()
 
 	if a.closed {
+		a.sendMu.Unlock()
 		return
 	}
 	a.closed = true
 	close(a.closeCh)
+
+	a.unacked = nil
+
+	// Close delivered channel so Read() unblocks
+	close(a.delivered)
+
+	// Stop FEC goroutines
+	if a.fecEnc != nil {
+		close(a.fecEnc.configCh)
+	}
+	if a.fecDec != nil {
+		close(a.fecDec.configCh)
+	}
+
+	// Stop pacer
+	if a.pacer != nil {
+		a.pacer.Close()
+	}
+
+	// Wake up ALL goroutines blocked in Send() waiting for window space
+	a.sendCond.Broadcast()
+	a.sendMu.Unlock()
 
 	// Остановить delayed ACK таймер
 	a.recvMu.Lock()
@@ -677,8 +711,6 @@ func (a *ARQEngine) Close() {
 		a.delayedACKTimer = nil
 	}
 	a.recvMu.Unlock()
-
-	a.unacked = nil
 }
 
 // Stats returns current engine statistics

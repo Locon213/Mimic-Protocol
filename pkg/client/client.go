@@ -174,8 +174,8 @@ func (c *Client) Start(ctx context.Context) error {
 	// 3. Start yamux session
 	yamuxCfg := yamux.DefaultConfig()
 	yamuxCfg.MaxStreamWindowSize = 16 * 1024 * 1024
-	yamuxCfg.EnableKeepAlive = true
-	yamuxCfg.KeepAliveInterval = 30 * time.Second
+	yamuxCfg.EnableKeepAlive = false                   // MTP handles keepalives natively
+	yamuxCfg.ConnectionWriteTimeout = 10 * time.Minute // Prevent sudden session shutdowns
 
 	session, err := yamux.Client(conn, yamuxCfg)
 	if err != nil {
