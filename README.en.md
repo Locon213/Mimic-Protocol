@@ -11,7 +11,7 @@
 [![Go Version](https://img.shields.io/badge/Go-1.25.5-00ADD8.svg)](https://golang.org)
 [![Go Report Card](https://goreportcard.com/badge/github.com/Locon213/Mimic-Protocol)](https://goreportcard.com/report/github.com/Locon213/Mimic-Protocol)
 [![Go Reference](https://pkg.go.dev/badge/github.com/Locon213/Mimic-Protocol.svg)](https://pkg.go.dev/github.com/Locon213/Mimic-Protocol)
-[![codecov](https://codecov.io/gh/Locon213/Mimic-Protocol/branch/main/graph/badge.svg)](https://codecov.io/gh/Locon213/Mimic-Protocol)
+[![codecov](https://codecov.io/github/Locon213/Mimic-Protocol/branch/main/graph/badge.svg?token=BJF09HUAF1)](https://codecov.io/github/Locon213/Mimic-Protocol)
 
 </div>
 
