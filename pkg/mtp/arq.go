@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -118,7 +119,7 @@ type ARQEngine struct {
 	unacked    map[uint32]*inflight // Packets waiting for ACK
 
 	// Receive state
-	recvNext        uint32             // Next expected sequence number
+	recvNext        atomic.Uint32      // Next expected sequence number (atomic for cross-lock reads)
 	recvBuf         map[uint32]*Packet // Out-of-order received packets
 	delivered       chan *Packet       // Ordered packets ready for Read()
 	unackedRecv     int                // Кол-во неподтверждённых полученных пакетов
@@ -198,7 +199,7 @@ func NewARQEngine(codec *PacketCodec, sendFunc func([]byte) error, deliverBufSiz
 			SeqNum:  startSeq,
 			Flags:   parityIdx,
 			Payload: payload,
-			AckNum:  arq.recvNext,
+			AckNum:  arq.recvNext.Load(),
 		}
 		if encoded, err := codec.Encode(pkt); err == nil {
 			sendFunc(encoded)
@@ -252,7 +253,7 @@ func (a *ARQEngine) Send(payload []byte) error {
 	pkt := &Packet{
 		Type:    PacketDATA,
 		SeqNum:  seq,
-		AckNum:  a.recvNext,
+		AckNum:  a.recvNext.Load(),
 		Payload: payload,
 	}
 
@@ -455,20 +456,20 @@ func (a *ARQEngine) handleDATA(pkt *Packet) {
 	seq := pkt.SeqNum
 	outOfOrder := false
 
-	if seq == a.recvNext {
+	if seq == a.recvNext.Load() {
 		a.deliverPacket(pkt)
-		a.recvNext++
+		a.recvNext.Add(1)
 
 		for {
-			if buffered, ok := a.recvBuf[a.recvNext]; ok {
+			if buffered, ok := a.recvBuf[a.recvNext.Load()]; ok {
 				a.deliverPacket(buffered)
-				delete(a.recvBuf, a.recvNext)
-				a.recvNext++
+				delete(a.recvBuf, a.recvNext.Load())
+				a.recvNext.Add(1)
 			} else {
 				break
 			}
 		}
-	} else if seq > a.recvNext {
+	} else if seq > a.recvNext.Load() {
 		a.recvBuf[seq] = pkt
 		outOfOrder = true
 	}
@@ -504,7 +505,7 @@ func (a *ARQEngine) sendACK() {
 	ack := &Packet{
 		Type:   PacketACK,
 		SeqNum: 0,
-		AckNum: a.recvNext,
+		AckNum: a.recvNext.Load(),
 	}
 
 	if len(a.recvBuf) > 0 {

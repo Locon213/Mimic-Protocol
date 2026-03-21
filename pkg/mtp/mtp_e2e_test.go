@@ -180,8 +180,12 @@ func (p *LossyUDPProxy) proxyLoop() {
 			}
 			mu.Unlock()
 
-			if clientAddr != nil {
-				p.proxyConn.WriteToUDP(respBuf[:n], clientAddr)
+			mu.Lock()
+			cAddr := clientAddr
+			mu.Unlock()
+
+			if cAddr != nil {
+				p.proxyConn.WriteToUDP(respBuf[:n], cAddr)
 			}
 		}
 	}()
@@ -261,32 +265,28 @@ func TestMTPNetworkSimulation(t *testing.T) {
 	// 3. Client Dial over Proxy
 	resolver := &mockResolver{}
 
-	// Context not used in Dial yet, removing to fix undeclared error
-
 	// To handle initial handshake packet drops, Dial handles internal retries.
-	// We wait until handshake succeeeds.
-	startDial := make(chan struct{})
-	var clientConn *MTPConn
+	// We wait until handshake succeeds.
+	dialCh := make(chan *MTPConn, 1)
 
 	go func() {
-		<-startDial
 		dialConn, dialErr := Dial(resolver, proxyAddr, DefaultTestSecret)
 		if dialErr != nil {
 			t.Errorf("Dial failed under loss: %v", dialErr)
+			dialCh <- nil
 			return
 		}
-		clientConn = dialConn
+		dialCh <- dialConn
 	}()
-	close(startDial)
 
-	// Wait for dial or timeout
-	time.Sleep(2 * time.Second) // Assuming dial succeeds
-	if clientConn == nil {
-		// Just wait a bit more, heavy loss might delay handshake
-		time.Sleep(3 * time.Second)
+	// Wait for dial result with timeout
+	var clientConn *MTPConn
+	select {
+	case clientConn = <-dialCh:
+	case <-time.After(5 * time.Second):
 	}
 	if clientConn == nil {
-		t.Skip("Skipping test due to handshake failure from 10% packet loss blocking SYN/ACK repeatedly.")
+		t.Skip("Skipping test due to handshake failure from packet loss blocking SYN/ACK repeatedly.")
 		return
 	}
 	defer clientConn.Close()
