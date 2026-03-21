@@ -168,7 +168,7 @@ type ARQEngine struct {
 	fecDec *FecDecoder
 
 	// Lifecycle
-	closed  bool
+	closed  atomic.Bool
 	closeCh chan struct{}
 }
 
@@ -227,7 +227,7 @@ func NewARQEngine(codec *PacketCodec, sendFunc func([]byte) error, deliverBufSiz
 // OPTIMIZED: uses windowUpdate channel for instant wake-up on ACK
 func (a *ARQEngine) Send(payload []byte) error {
 	a.sendMu.Lock()
-	if a.closed {
+	if a.closed.Load() {
 		a.sendMu.Unlock()
 		return fmt.Errorf("mtp: arq engine closed")
 	}
@@ -241,7 +241,7 @@ func (a *ARQEngine) Send(payload []byte) error {
 		default:
 			a.sendCond.Wait()
 		}
-		if a.closed { // Check again after waking up
+		if a.closed.Load() { // Check again after waking up
 			a.sendMu.Unlock()
 			return fmt.Errorf("mtp: arq engine closed")
 		}
@@ -308,7 +308,7 @@ func (a *ARQEngine) SendControl(pkt *Packet) error {
 // HandlePacket processes a received packet
 // OPTIMIZED: split locks for better concurrency
 func (a *ARQEngine) HandlePacket(pkt *Packet) {
-	if a.closed {
+	if a.closed.Load() {
 		return
 	}
 
@@ -489,7 +489,7 @@ func (a *ARQEngine) handleDATA(pkt *Packet) {
 
 // deliverPacket sends a packet to the delivery channel
 func (a *ARQEngine) deliverPacket(pkt *Packet) {
-	if a.closed {
+	if a.closed.Load() {
 		return
 	}
 	defer func() { recover() }() // Guard against closed channel panic
@@ -545,7 +545,7 @@ func (a *ARQEngine) retransmissionLoop() {
 		}
 
 		a.sendMu.Lock()
-		if a.closed {
+		if a.closed.Load() {
 			a.sendMu.Unlock()
 			return
 		}
@@ -676,11 +676,11 @@ func (a *ARQEngine) flushACK() {
 func (a *ARQEngine) Close() {
 	a.sendMu.Lock()
 
-	if a.closed {
+	if a.closed.Load() {
 		a.sendMu.Unlock()
 		return
 	}
-	a.closed = true
+	a.closed.Store(true)
 	close(a.closeCh)
 
 	a.unacked = nil
