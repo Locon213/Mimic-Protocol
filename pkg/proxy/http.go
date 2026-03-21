@@ -195,10 +195,37 @@ func (s *HTTPProxyServer) handleConn(conn net.Conn) {
 			}
 			targetConn = tConn
 		} else {
-			// PROXY via Yamux
-			stream, err := s.session.Open()
-			if err != nil {
-				log.Printf("[HTTP] Failed to open yamux stream: %v", err)
+			// PROXY via Yamux (with timeout to prevent indefinite hangs)
+			type streamResult struct {
+				stream net.Conn
+				err    error
+			}
+			resultCh := make(chan streamResult, 1)
+			go func() {
+				s, err := s.session.Open()
+				resultCh <- streamResult{stream: s, err: err}
+			}()
+			var stream net.Conn
+			select {
+			case res := <-resultCh:
+				if res.err != nil {
+					log.Printf("[HTTP] Failed to open yamux stream: %v", res.err)
+					if req.Method == http.MethodConnect {
+						conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
+					} else {
+						resp := &http.Response{
+							StatusCode: http.StatusBadGateway,
+							ProtoMajor: 1,
+							ProtoMinor: 1,
+							Body:       http.NoBody,
+						}
+						resp.Write(conn)
+					}
+					return
+				}
+				stream = res.stream
+			case <-time.After(30 * time.Second):
+				log.Printf("[HTTP] Timeout opening yamux stream for %s (session may be broken)", targetAddr)
 				if req.Method == http.MethodConnect {
 					conn.Write([]byte("HTTP/1.1 502 Bad Gateway\r\n\r\n"))
 				} else {
@@ -229,9 +256,9 @@ func (s *HTTPProxyServer) handleConn(conn net.Conn) {
 				return
 			}
 
-			// Wait for server response
+			// Wait for server response (increased to 60s for slow MTP connections)
 			respBytes := make([]byte, 1)
-			stream.SetReadDeadline(time.Now().Add(15 * time.Second))
+			stream.SetReadDeadline(time.Now().Add(60 * time.Second))
 			_, err = io.ReadFull(stream, respBytes)
 			stream.SetReadDeadline(time.Time{})
 

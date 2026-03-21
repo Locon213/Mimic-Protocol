@@ -3,6 +3,7 @@ package transport
 import (
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -11,6 +12,13 @@ import (
 	"github.com/Locon213/Mimic-Protocol/pkg/network"
 	"github.com/hashicorp/yamux"
 )
+
+// RotationConfig holds domain rotation settings
+type RotationConfig struct {
+	SwitchMin time.Duration // Minimum interval between rotations
+	SwitchMax time.Duration // Maximum interval between rotations
+	Randomize bool          // If true, pick random domain; otherwise sequential
+}
 
 // Manager handles the lifecycle of underlying network connections
 // and seamless switching between them using Yamux session resumption.
@@ -27,6 +35,12 @@ type Manager struct {
 	mutex       sync.Mutex
 
 	resolver *network.CachedResolver
+
+	// Domain rotation
+	currentDomain string   // Current domain for TLS SNI masking
+	domainIdx     int      // Current index in the domain list
+	domains       []string // List of domains to rotate through
+	rotCfg        RotationConfig
 }
 
 // NewManager creates a new transport manager
@@ -35,7 +49,48 @@ func NewManager(serverAddr string, uuid string, dns string) *Manager {
 		serverAddr: serverAddr,
 		uuid:       uuid,
 		resolver:   network.NewCachedResolver(dns, 5*time.Minute),
+		rotCfg: RotationConfig{
+			SwitchMin: 60 * time.Second,
+			SwitchMax: 300 * time.Second,
+		},
 	}
+}
+
+// SetDomains configures the list of domains for rotation
+func (m *Manager) SetDomains(domains []string) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	m.domains = domains
+	if len(domains) > 0 {
+		m.currentDomain = domains[0]
+	}
+}
+
+// SetRotationConfig sets the rotation timing and randomization settings
+func (m *Manager) SetRotationConfig(cfg RotationConfig) {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	if cfg.SwitchMin > 0 {
+		m.rotCfg.SwitchMin = cfg.SwitchMin
+	}
+	if cfg.SwitchMax > cfg.SwitchMin {
+		m.rotCfg.SwitchMax = cfg.SwitchMax
+	} else if cfg.SwitchMax == 0 {
+		m.rotCfg.SwitchMax = m.rotCfg.SwitchMin * 5
+	}
+	m.rotCfg.Randomize = cfg.Randomize
+}
+
+// NextRotationDelay returns a random delay until the next rotation based on config
+func (m *Manager) NextRotationDelay() time.Duration {
+	m.mutex.Lock()
+	min, max := m.rotCfg.SwitchMin, m.rotCfg.SwitchMax
+	m.mutex.Unlock()
+
+	if max <= min {
+		return min
+	}
+	return min + time.Duration(rand.Int63n(int64(max-min)))
 }
 
 // StartSession establishes the initial connection and Yamux session over MTP
@@ -63,7 +118,14 @@ func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 	m.mtpConn = conn
 	m.virtualConn = NewVirtualConn(conn)
 
-	// 3. Init Yamux Client
+	// 3. Set initial domain
+	if initialDomain != "" {
+		m.currentDomain = initialDomain
+	} else if len(m.domains) > 0 {
+		m.currentDomain = m.domains[0]
+	}
+
+	// 4. Init Yamux Client
 	yamuxCfg := yamux.DefaultConfig()
 	yamuxCfg.MaxStreamWindowSize = 16 * 1024 * 1024
 	yamuxCfg.EnableKeepAlive = false                   // MTP handles keepalives natively
@@ -81,28 +143,89 @@ func (m *Manager) StartSession(initialDomain string) (*yamux.Session, error) {
 	return session, nil
 }
 
-// RotateTransport switches the underlying transport to a new domain
-// while keeping the Yamux session alive via MTP session migration.
-// Uses protected dialer for Android VpnService compatibility.
+// RotateTransport performs a seamless MTP migration to a new transport.
+// This swaps the underlying UDP socket while keeping the Yamux session alive.
+// The VirtualConn buffers writes during the swap to prevent data loss.
 func (m *Manager) RotateTransport(newDomain string) error {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 
-	if m.virtualConn == nil {
+	if m.virtualConn == nil || m.mtpConn == nil {
 		return fmt.Errorf("session not initialized")
 	}
 
-	log.Printf("[Transport] Rotating transport (MTP migration)...")
+	// Cycle to next domain if no specific domain provided
+	if newDomain == "" && len(m.domains) > 1 {
+		if m.rotCfg.Randomize {
+			// Pick a random domain different from current
+			newIdx := rand.Intn(len(m.domains) - 1)
+			if newIdx >= m.domainIdx {
+				newIdx++
+			}
+			m.domainIdx = newIdx
+		} else {
+			// Sequential rotation
+			m.domainIdx = (m.domainIdx + 1) % len(m.domains)
+		}
+		newDomain = m.domains[m.domainIdx]
+	}
 
-	// 1. Migrate existing MTPConn (seamlessly swaps underlying UDP socket while keeping ARQ state)
+	if newDomain != "" {
+		log.Printf("[Transport] Seamless rotation -> domain: %s", newDomain)
+	} else {
+		log.Printf("[Transport] Seamless rotation (UDP socket refresh)")
+	}
+
+	// 1. Enable write buffering on VirtualConn to prevent data loss during swap
+	m.virtualConn.swapMu.Lock()
+	m.virtualConn.swapping = true
+	m.virtualConn.swapBuf = nil
+	m.virtualConn.swapMu.Unlock()
+
+	// 2. Migrate MTPConn: opens new UDP socket, performs MIGRATE handshake,
+	//    swaps the socket inside MTPConn (preserves ARQ state & sequence numbers)
 	if err := m.mtpConn.Migrate(m.resolver, m.serverAddr); err != nil {
+		// Restore normal write path on failure
+		m.virtualConn.swapMu.Lock()
+		m.virtualConn.swapping = false
+		m.virtualConn.swapBuf = nil
+		m.virtualConn.swapMu.Unlock()
 		return fmt.Errorf("failed to migrate MTP session: %w", err)
 	}
 
-	// The VirtualConn and Yamux session on top remain fully valid since mtpConn internally swapped sockets!
+	// 3. MTPConn's internal socket is now new — VirtualConn wraps MTPConn (not the raw UDP),
+	//    so VirtualConn automatically reads/writes through the new socket via MTPConn.
+	//    No VirtualConn.SwapConnection needed — the MTPConn IS the connection VirtualConn wraps.
 
-	log.Printf("[Transport] Transport rotated successfully via MTP migration")
+	// 4. Flush any buffered writes and restore normal write path
+	m.virtualConn.swapMu.Lock()
+	m.virtualConn.swapping = false
+	buffered := m.virtualConn.swapBuf
+	m.virtualConn.swapBuf = nil
+	m.virtualConn.swapMu.Unlock()
+
+	for _, data := range buffered {
+		if _, err := m.virtualConn.conn.Write(data); err != nil {
+			log.Printf("[Transport] Warning: failed to replay buffered write: %v", err)
+			// Non-fatal: the data will be retransmitted by upper layers
+			break
+		}
+	}
+
+	// 5. Update current domain
+	if newDomain != "" {
+		m.currentDomain = newDomain
+	}
+
+	log.Printf("[Transport] Seamless rotation complete")
 	return nil
+}
+
+// GetCurrentDomain returns the currently active domain for TLS SNI masking
+func (m *Manager) GetCurrentDomain() string {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return m.currentDomain
 }
 
 // GetMTPConn returns the current MTP connection (for stats)
@@ -110,4 +233,37 @@ func (m *Manager) GetMTPConn() *mtp.MTPConn {
 	m.mutex.Lock()
 	defer m.mutex.Unlock()
 	return m.mtpConn
+}
+
+// GetSession returns the current yamux session
+func (m *Manager) GetSession() *yamux.Session {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	return m.session
+}
+
+// IsSessionAlive returns true if the yamux session is still usable
+func (m *Manager) IsSessionAlive() bool {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+	if m.session == nil {
+		return false
+	}
+	return !m.session.IsClosed()
+}
+
+// Shutdown closes the transport manager and all underlying resources
+func (m *Manager) Shutdown() {
+	m.mutex.Lock()
+	defer m.mutex.Unlock()
+
+	if m.session != nil {
+		m.session.Close()
+		m.session = nil
+	}
+	if m.mtpConn != nil {
+		m.mtpConn.Close()
+		m.mtpConn = nil
+	}
+	m.virtualConn = nil
 }

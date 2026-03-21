@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math/rand"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -91,9 +92,12 @@ type Client struct {
 	wg     sync.WaitGroup
 
 	// MTP & Tunnel
-	session *yamux.Session
-	proxies []interface{ Close() error }
-	tun     *tunnel.Tunnel // Android TUN tunnel instance
+	session          *yamux.Session
+	transportManager *transport.Manager
+	mtpConn          *mtp.MTPConn
+	domainIdx        int
+	proxies          []interface{ Close() error }
+	tun              *tunnel.Tunnel // Android TUN tunnel instance
 }
 
 // NewClient creates a new Mimic client instance
@@ -147,10 +151,26 @@ func (c *Client) Start(ctx context.Context) error {
 		log.Printf("[Client] TUN tunnel started successfully")
 	}
 
-	// 1. Initialize Resolver
-	resolver := network.NewCachedResolver(c.cfg.DNS, 10*time.Minute)
+	// 1. Build domain list from config
+	var domainNames []string
+	for _, d := range c.cfg.Domains {
+		domainNames = append(domainNames, d.Domain)
+	}
+	if len(domainNames) == 0 {
+		domainNames = []string{c.cfg.ServerName}
+	}
 
-	// 2. Connect using configured transport
+	// 2. Initialize Transport Manager
+	resolver := network.NewCachedResolver(c.cfg.DNS, 10*time.Minute)
+	c.transportManager = transport.NewManager(c.cfg.Server, c.cfg.UUID, c.cfg.DNS)
+	c.transportManager.SetDomains(domainNames)
+	c.transportManager.SetRotationConfig(transport.RotationConfig{
+		SwitchMin: c.cfg.Settings.SwitchMin,
+		SwitchMax: c.cfg.Settings.SwitchMax,
+		Randomize: c.cfg.Settings.Randomize,
+	})
+
+	// 3. Connect using configured transport
 	var conn net.Conn
 	var err error
 
@@ -171,7 +191,7 @@ func (c *Client) Start(ctx context.Context) error {
 		return fmt.Errorf("%s connection failed: %w", c.cfg.Transport, err)
 	}
 
-	// 3. Start yamux session
+	// 4. Start yamux session
 	yamuxCfg := yamux.DefaultConfig()
 	yamuxCfg.MaxStreamWindowSize = 16 * 1024 * 1024
 	yamuxCfg.EnableKeepAlive = false                   // MTP handles keepalives natively
@@ -186,16 +206,28 @@ func (c *Client) Start(ctx context.Context) error {
 
 	c.session = session
 	c.connectedAt = time.Now()
+
+	// Set initial domain
+	if len(domainNames) > 0 {
+		c.currentDomain = domainNames[0]
+	}
+
 	c.status.Store(int32(StatusConnected))
 
-	// Start statistics collection
+	// 5. Start background goroutines
 	go c.collectStats()
+	go c.domainRotationLoop()
+	go c.sessionHealthLoop()
 
 	log.Printf("✅ Connected to %s via %s", c.cfg.Server, c.cfg.Transport)
+	if len(domainNames) > 1 {
+		log.Printf("🔄 Domain rotation enabled: %d domains, interval %s-%s, randomize=%v",
+			len(domainNames), c.cfg.Settings.SwitchMin, c.cfg.Settings.SwitchMax, c.cfg.Settings.Randomize)
+	}
 	return nil
 }
 
-// connectMTP connects using MTP protocol
+// connectMTP connects using MTP protocol and stores the MTPConn for rotation
 func (c *Client) connectMTP(resolver *network.CachedResolver) (net.Conn, error) {
 	var compression *mtp.CompressionConfig
 	if c.cfg.Compression.Enable {
@@ -212,6 +244,7 @@ func (c *Client) connectMTP(resolver *network.CachedResolver) (net.Conn, error) 
 		return nil, fmt.Errorf("mtp dial failed: %w", err)
 	}
 
+	c.mtpConn = mtpConn
 	return mtpConn, nil
 }
 
@@ -265,8 +298,13 @@ func (c *Client) Stop() {
 	c.proxies = nil
 	c.mu.Unlock()
 
-	// Stop session
-	if c.session != nil {
+	// Stop transport manager (closes session + MTPConn)
+	if c.transportManager != nil {
+		c.transportManager.Shutdown()
+	}
+
+	// Stop session directly if no manager
+	if c.session != nil && c.transportManager == nil {
 		c.session.Close()
 	}
 
@@ -376,12 +414,6 @@ func (c *Client) SendSpeedData(ctx context.Context, downloadSpeed, uploadSpeed i
 	c.UpdateSpeed(downloadSpeed, uploadSpeed)
 	c.UpdatePing(pingMs)
 
-	// In a real implementation, this would send the data via MTP to the server
-	// The server could use this for:
-	// - Quality monitoring
-	// - Dynamic routing decisions
-	// - User statistics
-
 	return nil
 }
 
@@ -390,6 +422,140 @@ func (c *Client) SetTrafficCallback(callback TrafficCallback) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.trafficCallback = callback
+}
+
+// ============================================
+// Domain Rotation & Health Monitoring
+// ============================================
+
+// domainRotationLoop periodically rotates the domain based on config settings.
+// Uses SwitchMin/SwitchMax for timing and Randomize for domain selection.
+func (c *Client) domainRotationLoop() {
+	if c.transportManager == nil {
+		return // No rotation without MTP transport
+	}
+
+	// Parse switch time from config if available
+	switchMin, switchMax := c.cfg.Settings.SwitchMin, c.cfg.Settings.SwitchMax
+	if switchMin == 0 {
+		switchMin = 60 * time.Second
+	}
+	if switchMax == 0 || switchMax <= switchMin {
+		switchMax = switchMin * 5
+	}
+
+	// Initial delay before first rotation
+	delay := switchMin
+	if switchMax > switchMin {
+		delay = switchMin + time.Duration(rand.Int63n(int64(switchMax-switchMin)))
+	}
+
+	log.Printf("[Client] First domain rotation scheduled in %s", delay)
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-time.After(delay):
+		}
+
+		if c.status.Load() != int32(StatusConnected) {
+			continue
+		}
+
+		// Perform seamless rotation
+		if err := c.transportManager.RotateTransport(""); err != nil {
+			log.Printf("[Client] Domain rotation failed: %v (will retry)", err)
+			// Shorter retry delay on failure
+			delay = 10 * time.Second
+			continue
+		}
+
+		// Update current domain from manager
+		newDomain := c.transportManager.GetCurrentDomain()
+		c.mu.Lock()
+		c.currentDomain = newDomain
+		c.mu.Unlock()
+
+		log.Printf("[Client] Domain rotated to: %s", newDomain)
+
+		// Schedule next rotation with random delay
+		delay = switchMin
+		if switchMax > switchMin {
+			delay = switchMin + time.Duration(rand.Int63n(int64(switchMax-switchMin)))
+		}
+	}
+}
+
+// sessionHealthLoop monitors the yamux session and triggers reconnection if it dies.
+func (c *Client) sessionHealthLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-c.ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		if c.status.Load() != int32(StatusConnected) {
+			continue
+		}
+
+		if c.session == nil || c.session.IsClosed() {
+			log.Printf("[Client] Session dead, attempting reconnection...")
+			c.status.Store(int32(StatusReconnecting))
+
+			// Attempt reconnection
+			if err := c.reconnectSession(); err != nil {
+				log.Printf("[Client] Reconnection failed: %v (retrying in 5s)", err)
+				c.status.Store(int32(StatusDisconnected))
+				continue
+			}
+
+			c.status.Store(int32(StatusConnected))
+			log.Printf("[Client] Session reconnected successfully")
+		}
+	}
+}
+
+// reconnectSession re-establishes the MTP connection and yamux session.
+func (c *Client) reconnectSession() error {
+	resolver := network.NewCachedResolver(c.cfg.DNS, 10*time.Minute)
+
+	var compression *mtp.CompressionConfig
+	if c.cfg.Compression.Enable {
+		compression = &mtp.CompressionConfig{
+			Enable:  c.cfg.Compression.Enable,
+			Level:   c.cfg.Compression.Level,
+			MinSize: c.cfg.Compression.MinSize,
+		}
+	}
+
+	mtpConn, err := mtp.DialWithConfig(resolver, c.cfg.Server, c.cfg.UUID, compression)
+	if err != nil {
+		return fmt.Errorf("mtp dial failed: %w", err)
+	}
+
+	yamuxCfg := yamux.DefaultConfig()
+	yamuxCfg.MaxStreamWindowSize = 16 * 1024 * 1024
+	yamuxCfg.EnableKeepAlive = false
+	yamuxCfg.ConnectionWriteTimeout = 10 * time.Minute
+
+	session, err := yamux.Client(mtpConn, yamuxCfg)
+	if err != nil {
+		mtpConn.Close()
+		return fmt.Errorf("yamux session failed: %w", err)
+	}
+
+	c.mu.Lock()
+	c.session = session
+	c.mtpConn = mtpConn
+	c.connectedAt = time.Now()
+	c.mu.Unlock()
+
+	return nil
 }
 
 // ============================================

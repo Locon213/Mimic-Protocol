@@ -263,11 +263,28 @@ func (s *SOCKS5Server) handleConn(conn net.Conn) {
 	}
 
 	// PROXY via Yamux
-	// 5. Open yamux stream to server
+	// 5. Open yamux stream to server with timeout to prevent indefinite hangs
 	log.Printf("[SOCKS5] Opening yamux stream for %s", targetAddr)
-	stream, err := s.session.Open()
-	if err != nil {
-		log.Printf("[SOCKS5] Failed to open yamux stream: %v", err)
+	type streamResult struct {
+		stream net.Conn
+		err    error
+	}
+	resultCh := make(chan streamResult, 1)
+	go func() {
+		s, err := s.session.Open()
+		resultCh <- streamResult{stream: s, err: err}
+	}()
+	var stream net.Conn
+	select {
+	case res := <-resultCh:
+		if res.err != nil {
+			log.Printf("[SOCKS5] Failed to open yamux stream: %v", res.err)
+			conn.Write([]byte{socks5Version, 0x05, 0x00, socks5AddrIPv4, 0, 0, 0, 0, 0, 0})
+			return
+		}
+		stream = res.stream
+	case <-time.After(30 * time.Second):
+		log.Printf("[SOCKS5] Timeout opening yamux stream for %s (session may be broken)", targetAddr)
 		conn.Write([]byte{socks5Version, 0x05, 0x00, socks5AddrIPv4, 0, 0, 0, 0, 0, 0})
 		return
 	}
@@ -288,9 +305,9 @@ func (s *SOCKS5Server) handleConn(conn net.Conn) {
 		return
 	}
 
-	// Wait for server response
+	// Wait for server response (increased to 60s for slow MTP connections)
 	resp := make([]byte, 1)
-	stream.SetReadDeadline(time.Now().Add(15 * time.Second))
+	stream.SetReadDeadline(time.Now().Add(60 * time.Second))
 	_, err = io.ReadFull(stream, resp)
 	stream.SetReadDeadline(time.Time{})
 	if err != nil || resp[0] != 0x01 {

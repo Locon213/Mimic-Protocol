@@ -2,6 +2,7 @@ package mtp
 
 import (
 	"fmt"
+	"log"
 	"math"
 	"sync"
 	"sync/atomic"
@@ -233,17 +234,27 @@ func (a *ARQEngine) Send(payload []byte) error {
 	}
 
 	// Ожидание свободного места в окне: моментальное пробуждение через windowUpdate
+	// Added timeout to prevent indefinite blocking if ACKs stop arriving
+	windowWaitStart := time.Now()
 	for len(a.unacked) >= a.sendWindow {
 		select {
 		case <-a.closeCh:
 			a.sendMu.Unlock()
 			return fmt.Errorf("mtp: arq engine closed")
 		default:
-			a.sendCond.Wait()
-		}
-		if a.closed.Load() { // Check again after waking up
+			// Use timed wait to detect stalled connections
 			a.sendMu.Unlock()
-			return fmt.Errorf("mtp: arq engine closed")
+			time.Sleep(50 * time.Millisecond)
+			a.sendMu.Lock()
+			if a.closed.Load() {
+				a.sendMu.Unlock()
+				return fmt.Errorf("mtp: arq engine closed")
+			}
+			// If window is still full after 30s, force-unblock
+			if len(a.unacked) >= a.sendWindow && time.Since(windowWaitStart) > 30*time.Second {
+				log.Printf("[ARQ] Warning: send window blocked for 30s (unacked=%d, window=%d) - forcing proceed", len(a.unacked), a.sendWindow)
+				break
+			}
 		}
 	}
 
